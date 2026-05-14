@@ -18,9 +18,9 @@
 
 import random
 import numpy as np
-import torch
 import torch.nn as nn
-from PIL import Image
+import torch
+from PIL import Image, ImageEnhance
 
 from tools.utils import set_seed
 
@@ -182,3 +182,67 @@ class StyleVariation(nn.Module):
             style_variation_weights = torch.FloatTensor(1).uniform_(0.5, 1.5)
 
         return style_variation_weights * img
+
+
+class WeakLowLight(nn.Module):
+    """
+    Simulates dim surveillance lighting while preserving identity structure.
+    The same parameters are reused across a track by SyncTrackTransform.
+    """
+
+    def __init__(self, brightness=(0.45, 0.85), contrast=(0.75, 1.15), p=0.3):
+        super().__init__()
+        self.brightness = brightness
+        self.contrast = contrast
+        self.p = p
+
+    def forward(self, img):
+        if random.random() > self.p:
+            return img
+
+        if not isinstance(img, Image.Image):
+            img = Image.fromarray(np.uint8(img))
+
+        brightness = random.uniform(self.brightness[0], self.brightness[1])
+        contrast = random.uniform(self.contrast[0], self.contrast[1])
+        img = ImageEnhance.Brightness(img).enhance(brightness)
+        img = ImageEnhance.Contrast(img).enhance(contrast)
+        return img
+
+
+class RandomBlockOcclusion(nn.Module):
+    """
+    Applies a modest rectangular occlusion on tensor images before normalization.
+    It is intentionally weaker than full random erasing so it can coexist with the
+    baseline erasing augmentation.
+    """
+
+    def __init__(self, p=0.25, scale=(0.03, 0.12), ratio=(0.3, 3.3), value=0.0):
+        super().__init__()
+        self.p = p
+        self.scale = scale
+        self.ratio = ratio
+        self.value = value
+
+    def forward(self, img):
+        if random.random() > self.p:
+            return img
+
+        if not torch.is_tensor(img):
+            return img
+
+        _, h, w = img.shape
+        area = h * w
+        for _ in range(10):
+            target_area = random.uniform(self.scale[0], self.scale[1]) * area
+            aspect_ratio = random.uniform(self.ratio[0], self.ratio[1])
+            erase_h = int(round((target_area * aspect_ratio) ** 0.5))
+            erase_w = int(round((target_area / aspect_ratio) ** 0.5))
+            if erase_h < h and erase_w < w:
+                y = random.randint(0, h - erase_h)
+                x = random.randint(0, w - erase_w)
+                img = img.clone()
+                img[:, y:y + erase_h, x:x + erase_w] = self.value
+                return img
+
+        return img

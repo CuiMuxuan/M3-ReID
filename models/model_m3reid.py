@@ -22,6 +22,9 @@ from models.backbones.resnet import resnet50
 from models.modules.non_local import NonLocal
 from models.modules.mvl_attention import MultiViewLearningAttention
 from models.modules.normalize import Normalize
+from models.modules.enhancement import LightweightChannelSpatialAttention
+from models.modules.enhancement import MultiScaleResidualFusion
+from models.modules.enhancement import PartGuidedAggregation
 
 
 class M3ReID(nn.Module):
@@ -34,7 +37,7 @@ class M3ReID(nn.Module):
     by Liang et al. See https://ieeexplore.ieee.org/document/11275868 (IEEE TIFS).
     """
 
-    def __init__(self, sample_seq_num, class_num):
+    def __init__(self, sample_seq_num, class_num, use_enhancements=False, part_num=4):
         """
         Initialize the M3-ReID model.
 
@@ -56,6 +59,7 @@ class M3ReID(nn.Module):
         self.embedding_dim = 2048  # ResNet
         self.sample_seq_num = sample_seq_num
         self.class_num = class_num
+        self.use_enhancements = use_enhancements
 
         self.backbone = resnet50(pretrained=True)
 
@@ -78,6 +82,11 @@ class M3ReID(nn.Module):
         self.mvl_attention = MultiViewLearningAttention(self.embedding_dim, num_heads=num_heads, mode='gem')
 
         self.embedding_dim = self.embedding_dim * (num_heads * 3)
+        if self.use_enhancements:
+            self.multi_scale_fusion = MultiScaleResidualFusion(low_channels=1024, high_channels=2048)
+            self.feature_attention = LightweightChannelSpatialAttention(2048)
+            self.part_aggregation = PartGuidedAggregation(channels=2048, part_num=part_num, out_channels=2048)
+            self.embedding_dim += 2048
 
         self.bn_neck = nn.BatchNorm1d(self.embedding_dim)
         nn.init.constant_(self.bn_neck.bias, 0)
@@ -116,7 +125,7 @@ class M3ReID(nn.Module):
         """
 
         b, t, c, h, w = inputs.shape
-        inputs = inputs.view(-1, c, h, w)
+        inputs = inputs.reshape(-1, c, h, w)
 
         inputs = self.backbone.conv1(inputs)
         inputs = self.backbone.bn1(inputs)
@@ -130,7 +139,7 @@ class M3ReID(nn.Module):
             x = self.backbone.layer1[i](x)
             if i == self.NL_1_idx[NL1_counter]:
                 _, C, H, W = x.shape
-                x = x.view(b, t, C, H, W).permute(0, 2, 1, 3, 4)
+                x = x.reshape(b, t, C, H, W).permute(0, 2, 1, 3, 4)
                 x = self.NL_1[NL1_counter](x)
                 NL1_counter += 1
                 x = x.permute(0, 2, 1, 3, 4).reshape(-1, C, H, W)
@@ -141,7 +150,7 @@ class M3ReID(nn.Module):
             x = self.backbone.layer2[i](x)
             if i == self.NL_2_idx[NL2_counter]:
                 _, C, H, W = x.shape
-                x = x.view(b, t, C, H, W).permute(0, 2, 1, 3, 4)
+                x = x.reshape(b, t, C, H, W).permute(0, 2, 1, 3, 4)
                 x = self.NL_2[NL2_counter](x)
                 NL2_counter += 1
                 x = x.permute(0, 2, 1, 3, 4).reshape(-1, C, H, W)
@@ -152,38 +161,46 @@ class M3ReID(nn.Module):
             x = self.backbone.layer3[i](x)
             if i == self.NL_3_idx[NL3_counter]:
                 _, C, H, W = x.shape
-                x = x.view(b, t, C, H, W).permute(0, 2, 1, 3, 4)
+                x = x.reshape(b, t, C, H, W).permute(0, 2, 1, 3, 4)
                 x = self.NL_3[NL3_counter](x)
                 NL3_counter += 1
                 x = x.permute(0, 2, 1, 3, 4).reshape(-1, C, H, W)
         # Layer 4
+        layer3_feat = x
         NL4_counter = 0
         if len(self.NL_4_idx) == 0: self.NL_4_idx = [-1]
         for i in range(len(self.backbone.layer4)):
             x = self.backbone.layer4[i](x)
             if i == self.NL_4_idx[NL4_counter]:
                 _, C, H, W = x.shape
-                x = x.view(b, t, C, H, W).permute(0, 2, 1, 3, 4)
+                x = x.reshape(b, t, C, H, W).permute(0, 2, 1, 3, 4)
                 x = self.NL_4[NL4_counter](x)
                 NL4_counter += 1
                 x = x.permute(0, 2, 1, 3, 4).reshape(-1, C, H, W)
         global_feat = x
 
+        if self.use_enhancements:
+            global_feat = self.multi_scale_fusion(layer3_feat, global_feat)
+            global_feat = self.feature_attention(global_feat)
+
         _, C, H, W = global_feat.shape
-        global_feat = global_feat.view(b, t, C, H, W)
+        global_feat = global_feat.reshape(b, t, C, H, W)
         x_pool, mvl_att_masks = self.mvl_attention(global_feat)
+        if self.use_enhancements:
+            part_pool = self.part_aggregation(global_feat)
+            x_pool = torch.cat([x_pool, part_pool], dim=1)
 
         x_embed = self.bn_neck(x_pool)
 
         b, c = x_pool.shape
-        x_pool = x_pool.view(-1, t, c)
+        x_pool = x_pool.reshape(-1, t, c)
         x_pool_mean = torch.mean(x_pool, dim=1)
-        x_embed = x_embed.view(-1, t, c)
+        x_embed = x_embed.reshape(-1, t, c)
         x_embed_mean = torch.mean(x_embed, dim=1)
 
         if self.training:
             b, t, c = x_embed.shape
-            x_logits = self.classifier_frame(x_embed.view(b * t, c)).view(b, t, -1)
+            x_logits = self.classifier_frame(x_embed.reshape(b * t, c)).reshape(b, t, -1)
             x_logits_mean = self.classifier(x_embed_mean)
             return x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks
         else:

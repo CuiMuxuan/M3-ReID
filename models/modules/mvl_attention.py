@@ -99,18 +99,18 @@ class MultiViewLearningAttention(nn.Module):
         feats = []
 
         # Process spatial (h, w) masks
-        x_hw = x.view(b * t, c, h, w)
+        x_hw = x.reshape(b * t, c, h, w)
         masks_hw = self.activation(self.view_attention_hw(x_hw))  # (b*t, num_heads, h, w)
 
         for i in range(self.num_heads):
             mask = masks_hw[:, i:i + 1, :, :]
             feat = mask * x_hw
             if self.mode == 'gem':
-                feat = feat.view(b * t, c, -1)
+                feat = feat.reshape(b * t, c, -1)
                 feat = self.gempool(feat)
             else:
                 feat = F.avg_pool2d(feat, feat.size()[2:])
-                feat = feat.view(feat.size(0), -1)
+                feat = feat.reshape(feat.size(0), -1)
             feats.append(feat)
 
         # Process temporal (t, w) masks
@@ -122,11 +122,11 @@ class MultiViewLearningAttention(nn.Module):
             feat = mask * x_tw
             feat = feat.reshape(b, h, c, t, w).permute(0, 3, 2, 1, 4).reshape(b * t, c, h, w)  # Correct reshaping
             if self.mode == 'gem':
-                feat = feat.view(b * t, c, -1)
+                feat = feat.reshape(b * t, c, -1)
                 feat = self.gempool(feat)
             else:
                 feat = F.avg_pool2d(feat, feat.size()[2:])
-                feat = feat.view(feat.size(0), -1)
+                feat = feat.reshape(feat.size(0), -1)
             feats.append(feat)
 
         # Process temporal (t, h) masks
@@ -138,18 +138,18 @@ class MultiViewLearningAttention(nn.Module):
             feat = mask * x_th
             feat = feat.reshape(b, w, c, t, h).permute(0, 3, 2, 4, 1).reshape(b * t, c, h, w)  # Correct reshaping
             if self.mode == 'gem':
-                feat = feat.view(b * t, c, -1)
+                feat = feat.reshape(b * t, c, -1)
                 feat = self.gempool(feat)
             else:
                 feat = F.avg_pool2d(feat, feat.size()[2:])
-                feat = feat.view(feat.size(0), -1)
+                feat = feat.reshape(feat.size(0), -1)
             feats.append(feat)
 
         # Concatenate all features
         output = torch.cat(feats, dim=1)
 
-        att_masks = [masks_hw.view(b * t, self.num_heads, h * w),
-                     masks_tw.view(b * h, self.num_heads, t * w),
-                     masks_th.view(b * w, self.num_heads, t * h)]
+        att_masks = [masks_hw.reshape(b * t, self.num_heads, h * w),
+                     masks_tw.reshape(b * h, self.num_heads, t * w),
+                     masks_th.reshape(b * w, self.num_heads, t * h)]
 
         return output, att_masks

@@ -1,0 +1,20 @@
+conda run -n temp_311 python train_m3reid.py `
+  --dataset BUPTCampus `
+  --dataset_dir C:\baidunetdiskdownload\BUPTCampus `
+  --t 10 `
+  --img_h 288 --img_w 144 `
+  --p_num 2 --k_num 2 `
+  --test_batch_size 4 `
+  --workers 2 `
+  --lr 0.0001 --wd 0.0005 `
+  --accum_steps 8 `
+  --fp16 `
+  --use_m3plus `
+  --triplet_weight 0.5 `
+  --triplet_frame_weight 0.25 `
+  --epochs 200 `
+  --log_interval 50 `
+  --test_interval 5 `
+  --save_interval 20 `
+  --desc M3Plus_t10_bs4_acc8 `
+  --gpu 0

@@ -41,8 +41,11 @@ from data.dataset import VideoVIDataset
 from data.transform import SyncTrackTransform
 from data.transform import WeightedGrayscale
 from data.transform import StyleVariation
+from data.transform import WeakLowLight
+from data.transform import RandomBlockOcclusion
 from models.model_m3reid import M3ReID
 from losses.mma_loss import MultiModalityAlignmentLoss
+from losses.metric_loss import CrossModalityBatchHardTripletLoss
 from losses.sep_loss import SeparationLoss
 from tools.eval_metrics import get_cmc_mAP_mINP
 from tools.utils import set_seed, time_str, Logger
@@ -59,19 +62,38 @@ if __name__ == '__main__':
     parser.add_argument('--img_w', default=144, type=int, help='Width of input images')
     parser.add_argument('--p_num', default=4, type=int, help='Num of identities')
     parser.add_argument('--k_num', default=8, type=int, help='Num of samples per identity')
+    parser.add_argument('--t', default=6, type=int, help='Number of sampled frames per video track')
+    parser.add_argument('--test_batch_size', default=None, type=int,
+                        help='Batch size for evaluation. Defaults to p_num * k_num')
     parser.add_argument('--workers', default=4, type=int, help='Num of dataloader workers')
 
     # -- Optim Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--lr', default=0.0002, type=float, help='Learning rate for adam optimizer')
     parser.add_argument('--wd', default=0.0005, type=float, help='Weight decay for adam optimizer')
+    parser.add_argument('--accum_steps', default=1, type=int,
+                        help='Gradient accumulation steps for memory-limited GPUs')
 
     # -- Other Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--fp16', action='store_true', default=False, help='Whether to use AMP')
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
-
+    parser.add_argument('--use_m3plus', action='store_true', default=False,
+                        help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
+    parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
+    parser.add_argument('--sample_method', default=None, type=str,
+                        choices=['norm_triplet', 'cross_modality_triplet', 'cross_modality_random',
+                                 'cross_modality_identity', 'identity_cross_modality'],
+                        help='Sampler strategy. Defaults to identity_cross_modality for M3Plus and norm_triplet otherwise')
+    parser.add_argument('--triplet_weight', default=0.5, type=float, help='Weight of cross-modality batch-hard triplet loss')
+    parser.add_argument('--triplet_frame_weight', default=0.25, type=float, help='Relative frame-level triplet loss weight')
+    parser.add_argument('--triplet_margin', default=0.3, type=float, help='Margin for hard triplet loss when soft margin is disabled')
+    parser.add_argument('--id_label_smoothing', default=None, type=float,
+                        help='Cross entropy label smoothing. Defaults to 0.1 for M3Plus and 0.0 for baseline')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
-    parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing')
-    parser.add_argument('--save_interval', default=1, type=int, help='Interval of saving checkpoints')
+    parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
+    parser.add_argument('--save_interval', default=1, type=int, help='Interval of saving checkpoints. Set 0 to disable')
+    parser.add_argument('--epochs', default=200, type=int, help='Total training epochs')
+    parser.add_argument('--max_train_batches', default=None, type=int,
+                        help='Optional maximum training batches per epoch for smoke tests')
 
     parser.add_argument('--seed', default=0, type=int, help='Random seed')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
@@ -102,9 +124,9 @@ if __name__ == '__main__':
     print(f'Args: {args}')
 
     # Data -------------------------------------------------------------------------------------------------------------
-    sample_seq_num = 6
+    sample_seq_num = args.t
     train_batch_size = args.p_num * args.k_num
-    test_batch_size = train_batch_size  # Set Appropriate Values Based on GPU Memory
+    test_batch_size = args.test_batch_size or train_batch_size  # Set Appropriate Values Based on GPU Memory
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
     if args.dataset == 'HITSZVCM':
@@ -122,27 +144,54 @@ if __name__ == '__main__':
     # -- Dataset & Dataloader ------------------------------------------------------------------------------------------
     normalize = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-    transform_train_ir = SyncTrackTransform(T.Compose([
-        T.ToPILImage(),
-        T.Resize((args.img_h, args.img_w)),
-        T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
-        T.RandomHorizontalFlip(),
-        T.ToTensor(),
-        normalize,
-        T.RandomErasing(),
-        StyleVariation(mode='one', p=1.0),
-    ]))
-    transform_train_rgb = SyncTrackTransform(T.Compose([
-        T.ToPILImage(),
-        T.Resize((args.img_h, args.img_w)),
-        WeightedGrayscale(p=0.5),
-        T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
-        T.RandomHorizontalFlip(),
-        T.ToTensor(),
-        normalize,
-        T.RandomErasing(),
-        StyleVariation(mode='all', p=1.0),
-    ]))
+    if args.use_m3plus:
+        transform_train_ir = SyncTrackTransform(T.Compose([
+            T.ToPILImage(),
+            T.Resize((args.img_h, args.img_w)),
+            WeakLowLight(p=0.25),
+            T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            RandomBlockOcclusion(p=0.20),
+            normalize,
+            T.RandomErasing(),
+            StyleVariation(mode='one', p=1.0),
+        ]))
+        transform_train_rgb = SyncTrackTransform(T.Compose([
+            T.ToPILImage(),
+            T.Resize((args.img_h, args.img_w)),
+            WeightedGrayscale(p=0.5),
+            WeakLowLight(p=0.35),
+            T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            RandomBlockOcclusion(p=0.30),
+            normalize,
+            T.RandomErasing(),
+            StyleVariation(mode='all', p=1.0),
+        ]))
+    else:
+        transform_train_ir = SyncTrackTransform(T.Compose([
+            T.ToPILImage(),
+            T.Resize((args.img_h, args.img_w)),
+            T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            normalize,
+            T.RandomErasing(),
+            StyleVariation(mode='one', p=1.0),
+        ]))
+        transform_train_rgb = SyncTrackTransform(T.Compose([
+            T.ToPILImage(),
+            T.Resize((args.img_h, args.img_w)),
+            WeightedGrayscale(p=0.5),
+            T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            normalize,
+            T.RandomErasing(),
+            StyleVariation(mode='all', p=1.0),
+        ]))
     transform_train = (transform_train_ir, transform_train_rgb)
 
     transform_test = SyncTrackTransform(T.Compose([
@@ -164,7 +213,8 @@ if __name__ == '__main__':
                                 shuffle=False, pin_memory=True, num_workers=args.workers)
 
     # Model ------------------------------------------------------------------------------------------------------------
-    model = M3ReID(sample_seq_num, num_train_class).cuda()
+    model = M3ReID(sample_seq_num, num_train_class,
+                   use_enhancements=args.use_m3plus, part_num=args.part_num).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
@@ -177,8 +227,12 @@ if __name__ == '__main__':
         model.load_state_dict(checkpoint, strict=False)
 
     # Loss -------------------------------------------------------------------------------------------------------------
-    criterion_ce_loss = nn.CrossEntropyLoss().cuda()
+    label_smoothing = args.id_label_smoothing
+    if label_smoothing is None:
+        label_smoothing = 0.1 if args.use_m3plus else 0.0
+    criterion_ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing).cuda()
     criterion_mma_loss = MultiModalityAlignmentLoss().cuda()
+    criterion_triplet_loss = CrossModalityBatchHardTripletLoss(margin=args.triplet_margin).cuda()
     criterion_ofr_loss = SeparationLoss().cuda()
     criterion_dac_loss = SeparationLoss().cuda()
 
@@ -187,10 +241,21 @@ if __name__ == '__main__':
     lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[80, 120], gamma=0.1)
 
     # Iteration --------------------------------------------------------------------------------------------------------
-    total_epoch_num = 200
-    sample_method = 'norm_triplet'
+    total_epoch_num = args.epochs
+    sample_method = args.sample_method
+    if sample_method is None:
+        sample_method = 'identity_cross_modality' if args.use_m3plus else 'norm_triplet'
+    enable_triplet_loss = args.use_m3plus and args.triplet_weight > 0
+    print(f'Effective setting: sample_seq_num={sample_seq_num}, use_m3plus={args.use_m3plus}, '
+          f'sample_method={sample_method}, label_smoothing={label_smoothing:.3f}, '
+          f'enable_triplet_loss={enable_triplet_loss}, accum_steps={args.accum_steps}, '
+          f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}')
 
-    if args.fp16: amp_scaler = torch.cuda.amp.GradScaler()
+    best_score = -1
+    best_result = None
+    best_epoch = -1
+
+    if args.fp16: amp_scaler = torch.amp.GradScaler('cuda')
     for epoch in range(total_epoch_num):
         train_dataset = VideoVIDataset(data_manager, transform=transform_train,
                                        sample_seq_num=sample_seq_num, sample_mode='evenly', dataset_mode='train')
@@ -217,7 +282,11 @@ if __name__ == '__main__':
         # -- Train -----------------------------------------------------------------------------------------------------
         model.train()
         s_time = time.time()
+        optimizer.zero_grad()
         for batch_idx, batch_data in enumerate(train_loader):
+            if args.max_train_batches is not None and batch_idx >= args.max_train_batches:
+                break
+
             track_data, track_pid, track_cid, track_mid = batch_data
             inputs, labels = track_data.cuda(), track_pid.cuda()
 
@@ -236,25 +305,42 @@ if __name__ == '__main__':
                 b, t, c = x_embed.shape
                 id_labels_all = id_labels.repeat_interleave(t)
                 m_labels_all = m_labels.repeat_interleave(t)
-                loss_mma_frames = criterion_mma_loss(x_embed.view(b * t, c), id_labels_all, m_labels_all)
-                loss_id_frames = criterion_ce_loss(x_logits.view(b * t, -1), id_labels_all)
+                loss_mma_frames = criterion_mma_loss(x_embed.reshape(b * t, c), id_labels_all, m_labels_all)
+                loss_id_frames = criterion_ce_loss(x_logits.reshape(b * t, -1), id_labels_all)
+                if enable_triplet_loss:
+                    loss_triplet = criterion_triplet_loss(x_embed_m, id_labels, m_labels)
+                    loss_triplet_frames = criterion_triplet_loss(x_embed.reshape(b * t, c), id_labels_all, m_labels_all)
+                else:
+                    loss_triplet = x_embed_m.new_zeros(())
+                    loss_triplet_frames = x_embed_m.new_zeros(())
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
 
             loss_mid = loss_id + loss_id_frames
             loss_mma = loss_mma + loss_mma_frames
+            loss_triplet = loss_triplet + args.triplet_frame_weight * loss_triplet_frames
 
             loss = loss_mid + loss_mma + loss_ofr + loss_dac
+            if enable_triplet_loss:
+                loss = loss + args.triplet_weight * loss_triplet
 
-            optimizer.zero_grad()
+            backward_loss = loss / args.accum_steps
             if args.fp16:
-                amp_scaler.scale(loss).backward()
-                amp_scaler.step(optimizer)
-                amp_scaler.update()
+                amp_scaler.scale(backward_loss).backward()
             else:
-                loss.backward()
-                optimizer.step()
+                backward_loss.backward()
+
+            is_update_step = ((batch_idx + 1) % args.accum_steps == 0) or ((batch_idx + 1) == len(train_loader))
+            if args.max_train_batches is not None:
+                is_update_step = is_update_step or ((batch_idx + 1) == args.max_train_batches)
+            if is_update_step:
+                if args.fp16:
+                    amp_scaler.step(optimizer)
+                    amp_scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad()
 
             current_lr = optimizer.param_groups[0]['lr']
 
@@ -268,6 +354,7 @@ if __name__ == '__main__':
                       f'cls_acc: {cls_acc:.4f} '
                       f'loss_mid: {loss_mid.data:.4f} '
                       f'loss_mma: {loss_mma.data:.4f} '
+                      f'loss_triplet: {loss_triplet.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -275,12 +362,13 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/cls_acc', cls_acc, iter_num)
                 writer.add_scalar('metric/loss_mid', loss_mid.data, iter_num)
                 writer.add_scalar('metric/loss_mma', loss_mma.data, iter_num)
+                writer.add_scalar('metric/loss_triplet', loss_triplet.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
         lr_scheduler.step()
 
-        if epoch % args.test_interval == 0:
+        if args.test_interval > 0 and (epoch + 1) % args.test_interval == 0:
             # -- Test --------------------------------------------------------------------------------------------------
             model.eval()
 
@@ -391,9 +479,42 @@ if __name__ == '__main__':
             writer.add_scalar('eval/v2i_mAP', v2i_mAP, epoch + 1)
             writer.add_scalar('eval/v2i_mINP', v2i_mINP, epoch + 1)
 
-        if epoch % args.save_interval == 0:
+            avg_r1 = (i2v_cmc[0] + v2i_cmc[0]) / 2
+            if avg_r1 > best_score:
+                best_score = avg_r1
+                best_epoch = epoch + 1
+                best_result = {
+                    'i2v_cmc': i2v_cmc.detach().clone(),
+                    'i2v_mAP': i2v_mAP.detach().clone(),
+                    'i2v_mINP': i2v_mINP.detach().clone(),
+                    'v2i_cmc': v2i_cmc.detach().clone(),
+                    'v2i_mAP': v2i_mAP.detach().clone(),
+                    'v2i_mINP': v2i_mINP.detach().clone(),
+                }
+                torch.save(model.state_dict(), os.path.join(modelckpt_dir, 'model_best.pth'))
+
+        if args.save_interval > 0 and (epoch + 1) % args.save_interval == 0:
             # -- Save --------------------------------------------------------------------------------------------------
             torch.save(model.state_dict(), os.path.join(modelckpt_dir, f'model_epoch-{epoch + 1}.pth'))
+
+    if best_result is not None:
+        info_str = (f'BEST-RESULT @ Epoch [{best_epoch}]\n'
+                    f'Mode - i2v  '
+                    f'r1: {best_result["i2v_cmc"][0]:.2%} '
+                    f'r5: {best_result["i2v_cmc"][4]:.2%} '
+                    f'r10: {best_result["i2v_cmc"][9]:.2%} '
+                    f'r20: {best_result["i2v_cmc"][19]:.2%} '
+                    f'mAP: {best_result["i2v_mAP"]:.2%} '
+                    f'mINP: {best_result["i2v_mINP"]:.2%}\n'
+                    f'Mode - v2i  '
+                    f'r1: {best_result["v2i_cmc"][0]:.2%} '
+                    f'r5: {best_result["v2i_cmc"][4]:.2%} '
+                    f'r10: {best_result["v2i_cmc"][9]:.2%} '
+                    f'r20: {best_result["v2i_cmc"][19]:.2%} '
+                    f'mAP: {best_result["v2i_mAP"]:.2%} '
+                    f'mINP: {best_result["v2i_mINP"]:.2%}')
+        info_str = '~' * 100 + '\n' + info_str + '\n' + '~' * 100
+        print(info_str)
 
     writer.close()
 

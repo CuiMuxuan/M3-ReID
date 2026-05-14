@@ -44,11 +44,15 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_dir', default='../Datasets/HITSZ-VCM', help='Directory of dataset')
     parser.add_argument('--img_h', default=288, type=int, help='Height of input images')
     parser.add_argument('--img_w', default=144, type=int, help='Width of input images')
+    parser.add_argument('--t', default=6, type=int, help='Number of sampled frames per video track')
     parser.add_argument('--batch_size', default=32, type=int, help='Batch size for testing')
     parser.add_argument('--workers', default=4, type=int, help='Num of dataloader workers')
 
     # -- Other Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
+    parser.add_argument('--use_m3plus', action='store_true', default=False,
+                        help='Enable enhanced M3-ReID architecture used by M3Plus checkpoints')
+    parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
     parser.add_argument('--desc', type=str, default=None, help='Description for this testing process')
 
@@ -72,7 +76,7 @@ if __name__ == '__main__':
     print(f'Args: {args}')
 
     # Data -------------------------------------------------------------------------------------------------------------
-    sample_seq_num = 6
+    sample_seq_num = args.t
     test_batch_size = args.batch_size  # Set Appropriate Values Based on GPU Memory
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
@@ -108,7 +112,8 @@ if __name__ == '__main__':
                                 shuffle=False, pin_memory=True, num_workers=args.workers)
 
     # Model ------------------------------------------------------------------------------------------------------------
-    model = M3ReID(sample_seq_num, num_train_class).cuda()
+    model = M3ReID(sample_seq_num, num_train_class,
+                   use_enhancements=args.use_m3plus, part_num=args.part_num).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))

@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.log
+*.pth
+
+ckptlog/
+run_logs/

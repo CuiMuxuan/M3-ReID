@@ -107,6 +107,6 @@ class MultiModalityAlignmentLoss(nn.Module):
             mma_loss += F.soft_margin_loss(mismatch_dist - match_dist, torch.ones_like(match_dist))
             valid_m_count += 1
 
-        mma_loss = mma_loss / valid_m_count if valid_m_count > 0 else 0
+        mma_loss = mma_loss / valid_m_count if valid_m_count > 0 else embeddings.new_zeros(())
 
         return mma_loss
