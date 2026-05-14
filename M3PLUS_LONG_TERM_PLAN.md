@@ -62,6 +62,35 @@ CUDA available: True
 
 No extra runtime dependency was added beyond the existing `requirements.txt`.
 
+## V100 32GB Linux Server Runbook
+
+The remote Ubuntu 22.04 / V100 32GB path should use the Linux scripts instead of the local Windows smoke scripts. They keep the 10-frame M3Plus method, raise the real training batch to `p_num * k_num = 32`, remove gradient accumulation, enable AMP, and tune the DataLoader for server I/O.
+
+Default server dataset paths:
+
+```bash
+/data/datasets/BUPTCampus
+/data/datasets/HITSZ-VCM
+```
+
+First server run:
+
+```bash
+git pull
+chmod +x run_m3plus_t10_buptcampus_v100.sh run_m3plus_t10_hitszvcm_v100.sh
+./run_m3plus_t10_buptcampus_v100.sh
+./run_m3plus_t10_hitszvcm_v100.sh
+```
+
+Override paths or worker count when needed:
+
+```bash
+BUPT_DIR=/your/path/BUPTCampus WORKERS=12 ./run_m3plus_t10_buptcampus_v100.sh
+HITSZ_DIR=/your/path/HITSZ-VCM WORKERS=12 ./run_m3plus_t10_hitszvcm_v100.sh
+```
+
+For long sessions, run inside `tmux` or `screen`; each script also writes a console log under `run_logs/`, while the training script writes checkpoints and TensorBoard files under `ckptlog/`.
+
 ## Main Training Commands
 
 BUPTCampus 10-frame M3Plus:

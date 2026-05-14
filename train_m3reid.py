@@ -50,6 +50,19 @@ from losses.sep_loss import SeparationLoss
 from tools.eval_metrics import get_cmc_mAP_mINP
 from tools.utils import set_seed, time_str, Logger
 
+
+def build_loader_kwargs(args):
+    kwargs = {
+        'num_workers': args.workers,
+        'pin_memory': args.pin_memory,
+    }
+    if args.workers > 0:
+        kwargs['persistent_workers'] = args.persistent_workers
+        if args.prefetch_factor is not None and args.prefetch_factor > 0:
+            kwargs['prefetch_factor'] = args.prefetch_factor
+    return kwargs
+
+
 if __name__ == '__main__':
 
     # Arguments --------------------------------------------------------------------------------------------------------
@@ -66,6 +79,14 @@ if __name__ == '__main__':
     parser.add_argument('--test_batch_size', default=None, type=int,
                         help='Batch size for evaluation. Defaults to p_num * k_num')
     parser.add_argument('--workers', default=4, type=int, help='Num of dataloader workers')
+    parser.add_argument('--pin_memory', action=argparse.BooleanOptionalAction, default=True,
+                        help='Pin dataloader memory for faster host-to-GPU copies')
+    parser.add_argument('--persistent_workers', action=argparse.BooleanOptionalAction, default=False,
+                        help='Keep dataloader workers alive between epochs when workers > 0')
+    parser.add_argument('--prefetch_factor', default=2, type=int,
+                        help='Dataloader prefetch factor when workers > 0. Set <=0 to disable')
+    parser.add_argument('--non_blocking', action=argparse.BooleanOptionalAction, default=True,
+                        help='Use non-blocking CUDA transfers when pin_memory is enabled')
 
     # -- Optim Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--lr', default=0.0002, type=float, help='Learning rate for adam optimizer')
@@ -75,6 +96,10 @@ if __name__ == '__main__':
 
     # -- Other Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--fp16', action='store_true', default=False, help='Whether to use AMP')
+    parser.add_argument('--eval_fp16', action='store_true', default=False,
+                        help='Use AMP autocast during validation feature extraction')
+    parser.add_argument('--cudnn_benchmark', action=argparse.BooleanOptionalAction, default=False,
+                        help='Enable cuDNN benchmark for fixed image sizes')
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
@@ -102,10 +127,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Env  -------------------------------------------------------------------------------------------------------------
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA is required for M3-ReID training.')
     torch.cuda.set_device(args.gpu)
     torch.set_float32_matmul_precision('high')  # highest high medium
 
     set_seed(args.seed)
+    torch.backends.cudnn.benchmark = args.cudnn_benchmark
+    if args.cudnn_benchmark:
+        torch.backends.cudnn.deterministic = False
     suffix = f'Time-{time_str()}' if (args.desc is None) else f'Time-{time_str()}_{args.desc}'
 
     ckptlog_dir = os.path.join('ckptlog', args.dataset, suffix)
@@ -122,11 +152,18 @@ if __name__ == '__main__':
     os.makedirs(modelckpt_dir, exist_ok=True)
 
     print(f'Args: {args}')
+    device_props = torch.cuda.get_device_properties(args.gpu)
+    print(f'CUDA device: id={args.gpu}, name={device_props.name}, '
+          f'total_memory={device_props.total_memory / (1024 ** 3):.1f}GB, '
+          f'cudnn_benchmark={torch.backends.cudnn.benchmark}, '
+          f'cudnn_deterministic={torch.backends.cudnn.deterministic}')
 
     # Data -------------------------------------------------------------------------------------------------------------
     sample_seq_num = args.t
     train_batch_size = args.p_num * args.k_num
     test_batch_size = args.test_batch_size or train_batch_size  # Set Appropriate Values Based on GPU Memory
+    loader_kwargs = build_loader_kwargs(args)
+    print(f'Dataloader setting: {loader_kwargs}, non_blocking_cuda={args.non_blocking}')
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
     if args.dataset == 'HITSZVCM':
@@ -208,9 +245,9 @@ if __name__ == '__main__':
     gallery_dataset = VideoVIDataset(data_manager, transform=transform_test,
                                      sample_seq_num=sample_seq_num, sample_mode='evenly', dataset_mode='gallery')
     query_loader = DataLoader(query_dataset, batch_size=test_batch_size,
-                              shuffle=False, pin_memory=True, num_workers=args.workers)
+                              shuffle=False, **loader_kwargs)
     gallery_loader = DataLoader(gallery_dataset, batch_size=test_batch_size,
-                                shuffle=False, pin_memory=True, num_workers=args.workers)
+                                shuffle=False, **loader_kwargs)
 
     # Model ------------------------------------------------------------------------------------------------------------
     model = M3ReID(sample_seq_num, num_train_class,
@@ -249,7 +286,8 @@ if __name__ == '__main__':
     print(f'Effective setting: sample_seq_num={sample_seq_num}, use_m3plus={args.use_m3plus}, '
           f'sample_method={sample_method}, label_smoothing={label_smoothing:.3f}, '
           f'enable_triplet_loss={enable_triplet_loss}, accum_steps={args.accum_steps}, '
-          f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}')
+          f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}, '
+          f'fp16={args.fp16}, eval_fp16={args.eval_fp16}')
 
     best_score = -1
     best_result = None
@@ -277,7 +315,7 @@ if __name__ == '__main__':
             shuffle = True
 
         train_loader = DataLoader(train_dataset, train_batch_size, sampler=sampler,
-                                  shuffle=shuffle, drop_last=True, pin_memory=True, num_workers=args.workers)
+                                  shuffle=shuffle, drop_last=True, **loader_kwargs)
 
         # -- Train -----------------------------------------------------------------------------------------------------
         model.train()
@@ -288,12 +326,13 @@ if __name__ == '__main__':
                 break
 
             track_data, track_pid, track_cid, track_mid = batch_data
-            inputs, labels = track_data.cuda(), track_pid.cuda()
+            inputs = track_data.cuda(non_blocking=args.non_blocking)
+            labels = track_pid.cuda(non_blocking=args.non_blocking)
 
             with torch.amp.autocast(device_type='cuda', enabled=args.fp16):
                 x_embed, x_embed_m, x_logits, x_logits_m, mvl_att_masks = model(inputs)
                 id_labels = labels
-                m_labels = track_mid.cuda()
+                m_labels = track_mid.cuda(non_blocking=args.non_blocking)
 
                 loss_ofr = criterion_ofr_loss(x_embed)
 
@@ -383,12 +422,13 @@ if __name__ == '__main__':
             with torch.no_grad():
 
                 for track_data, pids, cids, mids in query_loader:
-                    inputs = track_data.cuda()
-                    pids = pids.cuda()
-                    cids = cids.cuda()
-                    mids = mids.cuda()
+                    inputs = track_data.cuda(non_blocking=args.non_blocking)
+                    pids = pids.cuda(non_blocking=args.non_blocking)
+                    cids = cids.cuda(non_blocking=args.non_blocking)
+                    mids = mids.cuda(non_blocking=args.non_blocking)
                     batch_num = inputs.shape[0]
-                    embeddings = model(inputs)
+                    with torch.amp.autocast(device_type='cuda', enabled=args.eval_fp16):
+                        embeddings = model(inputs)
                     query_embeddings[query_ptr:query_ptr + batch_num, :] = embeddings.detach()
                     query_ptr = query_ptr + batch_num
                     q_pids.extend(pids)
@@ -399,12 +439,13 @@ if __name__ == '__main__':
                 q_mids = torch.stack(q_mids, dim=0)
 
                 for track_data, pids, cids, mids in gallery_loader:
-                    inputs = track_data.cuda()
-                    pids = pids.cuda()
-                    cids = cids.cuda()
-                    mids = mids.cuda()
+                    inputs = track_data.cuda(non_blocking=args.non_blocking)
+                    pids = pids.cuda(non_blocking=args.non_blocking)
+                    cids = cids.cuda(non_blocking=args.non_blocking)
+                    mids = mids.cuda(non_blocking=args.non_blocking)
                     batch_num = inputs.shape[0]
-                    embeddings = model(inputs)
+                    with torch.amp.autocast(device_type='cuda', enabled=args.eval_fp16):
+                        embeddings = model(inputs)
                     gallery_embeddings[gallery_ptr:gallery_ptr + batch_num, :] = embeddings.detach()
                     gallery_ptr = gallery_ptr + batch_num
                     g_pids.extend(pids)
