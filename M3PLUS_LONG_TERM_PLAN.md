@@ -89,13 +89,24 @@ BUPT_DIR=/your/path/BUPTCampus WORKERS=12 ./run_m3plus_t10_buptcampus_v100.sh
 HITSZ_DIR=/your/path/HITSZ-VCM WORKERS=12 ./run_m3plus_t10_hitszvcm_v100.sh
 ```
 
-The V100 observed OOM at physical batch 24/32, while batch 16 used about 26.9GB / 32GB. Keep the default `P_NUM=4 K_NUM=4 ACCUM_STEPS=2` for stable full runs. To probe a little more GPU memory without changing code, try physical batch 18 once:
+The V100 observed OOM at physical batch 24/32, while batch 16 used about 26.9GB / 32GB. Keep physical batch 16 for stable full runs. After the first HITSZ-VCM bs16 run plateaued below baseline, the HITSZ server script now uses `P_NUM=8 K_NUM=2 ACCUM_STEPS=2` by default: it keeps the same memory footprint but gives the batch-hard metric loss more identities and hard negatives. The scripts also default to `M3PLUS_AUG_STRENGTH=mild` and `TRIPLET_FRAME_WEIGHT=0.1` to reduce over-regularization from the extra weak-light/occlusion and frame-level hard mining.
+
+To probe a little more GPU memory without changing code, try physical batch 18 once:
 
 ```bash
 HITSZ_DIR=/root/work/HITSZ-VCM P_NUM=3 K_NUM=6 ACCUM_STEPS=2 ./run_m3plus_t10_hitszvcm_v100.sh
 ```
 
 If it OOMs or fragments memory after evaluation, return to the default batch 16. Avoid `K_NUM=5` because the cross-modality identity sampler is cleaner with even samples per identity.
+
+First failed HITSZ-VCM bs16 note:
+
+```text
+Run: M3Plus_t10_v100_bs16_nofile
+Setting: P_NUM=4, K_NUM=4, ACCUM_STEPS=1, M3Plus standard augmentation
+Best average Rank-1: Epoch 105, i2v 70.46 / 58.73 mAP, v2i 73.94 / 60.72 mAP
+Conclusion: below the 10-frame baseline and target; do not continue this exact configuration.
+```
 
 For long sessions, run inside `tmux` or `screen`; each script also writes a console log under `run_logs/`, while the training script writes checkpoints and TensorBoard files under `ckptlog/`.
 

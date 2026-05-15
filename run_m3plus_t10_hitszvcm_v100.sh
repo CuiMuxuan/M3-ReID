@@ -6,10 +6,13 @@ DATASET_DIR="${HITSZ_DIR:-/data/datasets/HITSZ-VCM}"
 WORKERS="${WORKERS:-8}"
 GPU="${GPU:-0}"
 LOG_DIR="${LOG_DIR:-run_logs}"
-P_NUM="${P_NUM:-4}"
-K_NUM="${K_NUM:-4}"
+P_NUM="${P_NUM:-8}"
+K_NUM="${K_NUM:-2}"
 TEST_BATCH_SIZE="${TEST_BATCH_SIZE:-32}"
 ACCUM_STEPS="${ACCUM_STEPS:-2}"
+M3PLUS_AUG_STRENGTH="${M3PLUS_AUG_STRENGTH:-mild}"
+TRIPLET_WEIGHT="${TRIPLET_WEIGHT:-0.5}"
+TRIPLET_FRAME_WEIGHT="${TRIPLET_FRAME_WEIGHT:-0.1}"
 DESC="${DESC:-M3Plus_t10_v100_bs$((P_NUM * K_NUM))_acc${ACCUM_STEPS}}"
 
 mkdir -p "${LOG_DIR}"
@@ -34,8 +37,9 @@ python train_m3reid.py \
   --accum_steps "${ACCUM_STEPS}" \
   --fp16 \
   --use_m3plus \
-  --triplet_weight 0.5 \
-  --triplet_frame_weight 0.25 \
+  --m3plus_aug_strength "${M3PLUS_AUG_STRENGTH}" \
+  --triplet_weight "${TRIPLET_WEIGHT}" \
+  --triplet_frame_weight "${TRIPLET_FRAME_WEIGHT}" \
   --epochs 200 \
   --log_interval 20 \
   --test_interval 5 \

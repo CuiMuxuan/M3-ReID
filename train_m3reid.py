@@ -63,6 +63,31 @@ def build_loader_kwargs(args):
     return kwargs
 
 
+def get_m3plus_aug_probs(strength):
+    if strength == 'standard':
+        return {
+            'ir_lowlight': 0.25,
+            'rgb_lowlight': 0.35,
+            'ir_occlusion': 0.20,
+            'rgb_occlusion': 0.30,
+        }
+    if strength == 'mild':
+        return {
+            'ir_lowlight': 0.10,
+            'rgb_lowlight': 0.15,
+            'ir_occlusion': 0.05,
+            'rgb_occlusion': 0.10,
+        }
+    if strength == 'none':
+        return {
+            'ir_lowlight': 0.0,
+            'rgb_lowlight': 0.0,
+            'ir_occlusion': 0.0,
+            'rgb_occlusion': 0.0,
+        }
+    raise ValueError(f'Unknown M3Plus augmentation strength: {strength}')
+
+
 if __name__ == '__main__':
 
     # Arguments --------------------------------------------------------------------------------------------------------
@@ -103,6 +128,9 @@ if __name__ == '__main__':
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
+    parser.add_argument('--m3plus_aug_strength', default='standard',
+                        choices=['standard', 'mild', 'none'],
+                        help='Strength of extra M3Plus low-light and block-occlusion augmentation')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--sample_method', default=None, type=str,
                         choices=['norm_triplet', 'cross_modality_triplet', 'cross_modality_random',
@@ -182,14 +210,16 @@ if __name__ == '__main__':
     normalize = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
     if args.use_m3plus:
+        aug_probs = get_m3plus_aug_probs(args.m3plus_aug_strength)
+        print(f'M3Plus augmentation strength={args.m3plus_aug_strength}, probs={aug_probs}')
         transform_train_ir = SyncTrackTransform(T.Compose([
             T.ToPILImage(),
             T.Resize((args.img_h, args.img_w)),
-            WeakLowLight(p=0.25),
+            WeakLowLight(p=aug_probs['ir_lowlight']),
             T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
             T.RandomHorizontalFlip(),
             T.ToTensor(),
-            RandomBlockOcclusion(p=0.20),
+            RandomBlockOcclusion(p=aug_probs['ir_occlusion']),
             normalize,
             T.RandomErasing(),
             StyleVariation(mode='one', p=1.0),
@@ -198,11 +228,11 @@ if __name__ == '__main__':
             T.ToPILImage(),
             T.Resize((args.img_h, args.img_w)),
             WeightedGrayscale(p=0.5),
-            WeakLowLight(p=0.35),
+            WeakLowLight(p=aug_probs['rgb_lowlight']),
             T.RandomCrop((args.img_h, args.img_w), padding=5, fill=0),
             T.RandomHorizontalFlip(),
             T.ToTensor(),
-            RandomBlockOcclusion(p=0.30),
+            RandomBlockOcclusion(p=aug_probs['rgb_occlusion']),
             normalize,
             T.RandomErasing(),
             StyleVariation(mode='all', p=1.0),
