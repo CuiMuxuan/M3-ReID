@@ -129,6 +129,9 @@ if __name__ == '__main__':
                         help='Dataloader prefetch factor when workers > 0. Set <=0 to disable')
     parser.add_argument('--non_blocking', action=argparse.BooleanOptionalAction, default=True,
                         help='Use non-blocking CUDA transfers when pin_memory is enabled')
+    parser.add_argument('--torch_sharing_strategy', default=None,
+                        choices=['file_descriptor', 'file_system'],
+                        help='Torch multiprocessing sharing strategy for DataLoader workers')
 
     # -- Optim Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--lr', default=0.0002, type=float, help='Learning rate for adam optimizer')
@@ -188,6 +191,8 @@ if __name__ == '__main__':
     # Env  -------------------------------------------------------------------------------------------------------------
     if not torch.cuda.is_available():
         raise RuntimeError('CUDA is required for M3-ReID training.')
+    if args.torch_sharing_strategy is not None:
+        torch.multiprocessing.set_sharing_strategy(args.torch_sharing_strategy)
     torch.cuda.set_device(args.gpu)
     torch.set_float32_matmul_precision('high')  # highest high medium
 
@@ -216,6 +221,7 @@ if __name__ == '__main__':
           f'total_memory={device_props.total_memory / (1024 ** 3):.1f}GB, '
           f'cudnn_benchmark={torch.backends.cudnn.benchmark}, '
           f'cudnn_deterministic={torch.backends.cudnn.deterministic}')
+    print(f'Torch multiprocessing sharing strategy: {torch.multiprocessing.get_sharing_strategy()}')
 
     # Data -------------------------------------------------------------------------------------------------------------
     sample_seq_num = args.t

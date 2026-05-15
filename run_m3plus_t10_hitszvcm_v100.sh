@@ -3,7 +3,7 @@ set -euo pipefail
 
 CONDA_ENV="${CONDA_ENV:-temp_311}"
 DATASET_DIR="${HITSZ_DIR:-/data/datasets/HITSZ-VCM}"
-WORKERS="${WORKERS:-8}"
+WORKERS="${WORKERS:-2}"
 GPU="${GPU:-0}"
 LOG_DIR="${LOG_DIR:-run_logs}"
 P_NUM="${P_NUM:-8}"
@@ -23,9 +23,17 @@ EVAL_START_EPOCH="${EVAL_START_EPOCH:-60}"
 TEST_INTERVAL="${TEST_INTERVAL:-5}"
 EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-6}"
 DESC="${DESC:-M3Plus_t10_v100_bs$((P_NUM * K_NUM))_acc${ACCUM_STEPS}}"
+PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
+TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
 EXTRA_ARGS=()
 if [ "${GRAD_CHECKPOINT_HEAD}" = "1" ]; then
   EXTRA_ARGS+=(--grad_checkpoint_head)
+fi
+if [ "${PERSISTENT_WORKERS}" = "1" ]; then
+  EXTRA_ARGS+=(--persistent_workers)
+else
+  EXTRA_ARGS+=(--no-persistent_workers)
 fi
 
 mkdir -p "${LOG_DIR}"
@@ -41,10 +49,10 @@ python train_m3reid.py \
   --p_num "${P_NUM}" --k_num "${K_NUM}" \
   --test_batch_size "${TEST_BATCH_SIZE}" \
   --workers "${WORKERS}" \
-  --persistent_workers \
-  --prefetch_factor 4 \
+  --prefetch_factor "${PREFETCH_FACTOR}" \
   --pin_memory \
   --non_blocking \
+  --torch_sharing_strategy "${TORCH_SHARING_STRATEGY}" \
   --cudnn_benchmark \
   --lr 0.0002 --wd 0.0005 \
   --optimizer "${OPTIMIZER}" \

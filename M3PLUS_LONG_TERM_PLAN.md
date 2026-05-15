@@ -118,6 +118,17 @@ OPTIMIZER=adam8bit HITSZ_DIR=/root/work/HITSZ-VCM ./run_m3plus_t10_hitszvcm_v100
 
 Do not checkpoint the ResNet backbone by default because it contains BatchNorm layers; naïve checkpointing can update BN running statistics during recomputation and hurt ReID accuracy. If time is more important than maximum accuracy, run a compact ablation with `MVL_NUM_HEADS=1 PART_DIM=512`; if accuracy drops, return to the default.
 
+DataLoader stability note for the V100 server:
+
+```text
+WORKERS=2
+PERSISTENT_WORKERS=0
+PREFETCH_FACTOR=2
+TORCH_SHARING_STRATEGY=file_system
+```
+
+This is the default after the Python 3.12 multiprocessing `ConnectionRefusedError` seen with 8 workers and persistent workers. If the run is stable and GPU utilization is too low, try `WORKERS=4 PERSISTENT_WORKERS=0` first; only re-enable persistent workers after a full epoch has completed cleanly.
+
 To probe a little more GPU memory without changing code, try physical batch 18 once:
 
 ```bash
