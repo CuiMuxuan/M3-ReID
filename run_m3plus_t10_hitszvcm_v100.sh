@@ -6,6 +6,11 @@ DATASET_DIR="${HITSZ_DIR:-/data/datasets/HITSZ-VCM}"
 WORKERS="${WORKERS:-8}"
 GPU="${GPU:-0}"
 LOG_DIR="${LOG_DIR:-run_logs}"
+P_NUM="${P_NUM:-4}"
+K_NUM="${K_NUM:-4}"
+TEST_BATCH_SIZE="${TEST_BATCH_SIZE:-32}"
+ACCUM_STEPS="${ACCUM_STEPS:-2}"
+DESC="${DESC:-M3Plus_t10_v100_bs$((P_NUM * K_NUM))_acc${ACCUM_STEPS}}"
 
 mkdir -p "${LOG_DIR}"
 
@@ -17,8 +22,8 @@ python train_m3reid.py \
   --dataset_dir "${DATASET_DIR}" \
   --t 10 \
   --img_h 288 --img_w 144 \
-  --p_num 4 --k_num 8 \
-  --test_batch_size 32 \
+  --p_num "${P_NUM}" --k_num "${K_NUM}" \
+  --test_batch_size "${TEST_BATCH_SIZE}" \
   --workers "${WORKERS}" \
   --persistent_workers \
   --prefetch_factor 4 \
@@ -26,7 +31,7 @@ python train_m3reid.py \
   --non_blocking \
   --cudnn_benchmark \
   --lr 0.0002 --wd 0.0005 \
-  --accum_steps 1 \
+  --accum_steps "${ACCUM_STEPS}" \
   --fp16 \
   --use_m3plus \
   --triplet_weight 0.5 \
@@ -35,6 +40,6 @@ python train_m3reid.py \
   --log_interval 20 \
   --test_interval 5 \
   --save_interval 10 \
-  --desc M3Plus_t10_v100_bs32 \
+  --desc "${DESC}" \
   --gpu "${GPU}" \
   2>&1 | tee "${LOG_DIR}/m3plus_t10_hitszvcm_v100_$(date +%Y%m%d_%H%M%S).log"

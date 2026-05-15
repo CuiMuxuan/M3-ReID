@@ -64,7 +64,7 @@ No extra runtime dependency was added beyond the existing `requirements.txt`.
 
 ## V100 32GB Linux Server Runbook
 
-The remote Ubuntu 22.04 / V100 32GB path should use the Linux scripts instead of the local Windows smoke scripts. They keep the 10-frame M3Plus method, raise the real training batch to `p_num * k_num = 32`, remove gradient accumulation, enable AMP, and tune the DataLoader for server I/O.
+The remote Ubuntu 22.04 / V100 32GB path should use the Linux scripts instead of the local Windows smoke scripts. They keep the 10-frame M3Plus method, use a safe physical training batch of `p_num * k_num = 16`, keep the effective batch at 32 through `--accum_steps 2`, enable AMP, and tune the DataLoader for server I/O.
 
 Default server dataset paths:
 
@@ -88,6 +88,14 @@ Override paths or worker count when needed:
 BUPT_DIR=/your/path/BUPTCampus WORKERS=12 ./run_m3plus_t10_buptcampus_v100.sh
 HITSZ_DIR=/your/path/HITSZ-VCM WORKERS=12 ./run_m3plus_t10_hitszvcm_v100.sh
 ```
+
+The V100 observed OOM at physical batch 24/32, while batch 16 used about 26.9GB / 32GB. Keep the default `P_NUM=4 K_NUM=4 ACCUM_STEPS=2` for stable full runs. To probe a little more GPU memory without changing code, try physical batch 18 once:
+
+```bash
+HITSZ_DIR=/root/work/HITSZ-VCM P_NUM=3 K_NUM=6 ACCUM_STEPS=2 ./run_m3plus_t10_hitszvcm_v100.sh
+```
+
+If it OOMs or fragments memory after evaluation, return to the default batch 16. Avoid `K_NUM=5` because the cross-modality identity sampler is cleaner with even samples per identity.
 
 For long sessions, run inside `tmux` or `screen`; each script also writes a console log under `run_logs/`, while the training script writes checkpoints and TensorBoard files under `ckptlog/`.
 
