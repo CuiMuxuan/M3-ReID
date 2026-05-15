@@ -17,6 +17,7 @@
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from models.backbones.resnet import resnet50
 from models.modules.non_local import NonLocal
@@ -38,7 +39,8 @@ class M3ReID(nn.Module):
     """
 
     def __init__(self, sample_seq_num, class_num, use_enhancements=False, part_num=4,
-                 mvl_num_heads=2, part_dim=2048, feature_dropout=0.0):
+                 mvl_num_heads=2, part_dim=2048, feature_dropout=0.0,
+                 grad_checkpoint_head=False):
         """
         Initialize the M3-ReID model.
 
@@ -61,6 +63,7 @@ class M3ReID(nn.Module):
         self.sample_seq_num = sample_seq_num
         self.class_num = class_num
         self.use_enhancements = use_enhancements
+        self.grad_checkpoint_head = grad_checkpoint_head
 
         self.backbone = resnet50(pretrained=True)
 
@@ -100,6 +103,14 @@ class M3ReID(nn.Module):
         self.classifier = nn.Linear(self.embedding_dim, class_num, bias=False)
 
         self.l2_norm = Normalize(power=2)
+
+    def _checkpoint_if_enabled(self, fn, *args):
+        if self.training and self.grad_checkpoint_head:
+            return checkpoint(fn, *args, use_reentrant=False)
+        return fn(*args)
+
+    def _mvl_forward(self, global_feat):
+        return self.mvl_attention(global_feat)
 
     def forward(self, inputs):
         """
@@ -185,13 +196,13 @@ class M3ReID(nn.Module):
 
         if self.use_enhancements:
             global_feat = self.multi_scale_fusion(layer3_feat, global_feat)
-            global_feat = self.feature_attention(global_feat)
+            global_feat = self._checkpoint_if_enabled(self.feature_attention, global_feat)
 
         _, C, H, W = global_feat.shape
         global_feat = global_feat.reshape(b, t, C, H, W)
-        x_pool, mvl_att_masks = self.mvl_attention(global_feat)
+        x_pool, mvl_att_masks = self._checkpoint_if_enabled(self._mvl_forward, global_feat)
         if self.use_enhancements:
-            part_pool = self.part_aggregation(global_feat)
+            part_pool = self._checkpoint_if_enabled(self.part_aggregation, global_feat)
             x_pool = torch.cat([x_pool, part_pool], dim=1)
 
         x_embed = self.bn_neck(x_pool)

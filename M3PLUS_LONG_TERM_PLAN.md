@@ -96,13 +96,27 @@ The current V100 retry scripts also use a lighter M3Plus head and faster validat
 ```text
 PART_DIM=1024              # local part branch reduced from 2048
 FEATURE_DROPOUT=0.1        # ID classifier dropout, metric features unchanged
-EVAL_START_EPOCH=80        # skip expensive early validation
-TEST_INTERVAL=5            # validate every 5 epochs after epoch 80
-EARLY_STOP_PATIENCE=8      # stop after 8 validation rounds without avg Rank-1 improvement
+OPTIMIZER=adamw            # decoupled weight decay, better default than Adam for this retry
+EPOCHS=130                 # expected sufficient based on the first plateau around 95-105
+EVAL_START_EPOCH=60        # skip expensive early validation
+TEST_INTERVAL=5            # validate every 5 epochs after epoch 60
+EARLY_STOP_PATIENCE=6      # stop after 6 validation rounds without avg Rank-1 improvement
 --eval_fp16                # faster validation feature extraction
 ```
 
-This keeps the main MVL module at `MVL_NUM_HEADS=2` for accuracy, but cuts local-branch classifier width and avoids about 15 early validation passes on HITSZ-VCM. If time is more important than maximum accuracy, run a compact ablation with `MVL_NUM_HEADS=1 PART_DIM=512`; if accuracy drops, return to the default.
+This keeps the main MVL module at `MVL_NUM_HEADS=2` for accuracy, but cuts local-branch classifier width and avoids many early validation passes on HITSZ-VCM. AMP is already enabled for both training and evaluation. Gradient accumulation is kept at `ACCUM_STEPS=2` so physical batch 16 has an effective batch of 32.
+
+Optional memory experiments:
+
+```bash
+# Save activation memory in the M3Plus attention/local head only. Slower, but may allow P_NUM=9 K_NUM=2 or larger TEST_BATCH_SIZE.
+GRAD_CHECKPOINT_HEAD=1 HITSZ_DIR=/root/work/HITSZ-VCM ./run_m3plus_t10_hitszvcm_v100.sh
+
+# Requires: pip install bitsandbytes
+OPTIMIZER=adam8bit HITSZ_DIR=/root/work/HITSZ-VCM ./run_m3plus_t10_hitszvcm_v100.sh
+```
+
+Do not checkpoint the ResNet backbone by default because it contains BatchNorm layers; naïve checkpointing can update BN running statistics during recomputation and hurt ReID accuracy. If time is more important than maximum accuracy, run a compact ablation with `MVL_NUM_HEADS=1 PART_DIM=512`; if accuracy drops, return to the default.
 
 To probe a little more GPU memory without changing code, try physical batch 18 once:
 

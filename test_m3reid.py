@@ -84,6 +84,8 @@ if __name__ == '__main__':
                         help='Number of MVL attention heads per view')
     parser.add_argument('--feature_dropout', default=0.0, type=float,
                         help='Dropout value used by the checkpoint architecture')
+    parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
+                        help='Accepted for architecture parity; checkpointing is only active during training')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
     parser.add_argument('--desc', type=str, default=None, help='Description for this testing process')
 
@@ -157,7 +159,8 @@ if __name__ == '__main__':
     model = M3ReID(sample_seq_num, num_train_class,
                    use_enhancements=args.use_m3plus, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
-                   feature_dropout=args.feature_dropout).cuda()
+                   feature_dropout=args.feature_dropout,
+                   grad_checkpoint_head=args.grad_checkpoint_head).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))

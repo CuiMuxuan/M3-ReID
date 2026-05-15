@@ -16,11 +16,17 @@ FEATURE_DROPOUT="${FEATURE_DROPOUT:-0.1}"
 M3PLUS_AUG_STRENGTH="${M3PLUS_AUG_STRENGTH:-mild}"
 TRIPLET_WEIGHT="${TRIPLET_WEIGHT:-0.5}"
 TRIPLET_FRAME_WEIGHT="${TRIPLET_FRAME_WEIGHT:-0.1}"
-EPOCHS="${EPOCHS:-180}"
-EVAL_START_EPOCH="${EVAL_START_EPOCH:-80}"
+OPTIMIZER="${OPTIMIZER:-adamw}"
+GRAD_CHECKPOINT_HEAD="${GRAD_CHECKPOINT_HEAD:-0}"
+EPOCHS="${EPOCHS:-130}"
+EVAL_START_EPOCH="${EVAL_START_EPOCH:-60}"
 TEST_INTERVAL="${TEST_INTERVAL:-5}"
-EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-8}"
+EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-6}"
 DESC="${DESC:-M3Plus_t10_v100_bs$((P_NUM * K_NUM))_acc${ACCUM_STEPS}}"
+EXTRA_ARGS=()
+if [ "${GRAD_CHECKPOINT_HEAD}" = "1" ]; then
+  EXTRA_ARGS+=(--grad_checkpoint_head)
+fi
 
 mkdir -p "${LOG_DIR}"
 
@@ -41,6 +47,7 @@ python train_m3reid.py \
   --non_blocking \
   --cudnn_benchmark \
   --lr 0.0001 --wd 0.0005 \
+  --optimizer "${OPTIMIZER}" \
   --accum_steps "${ACCUM_STEPS}" \
   --fp16 \
   --eval_fp16 \
@@ -59,4 +66,5 @@ python train_m3reid.py \
   --save_interval 10 \
   --desc "${DESC}" \
   --gpu "${GPU}" \
+  "${EXTRA_ARGS[@]}" \
   2>&1 | tee "${LOG_DIR}/m3plus_t10_buptcampus_v100_$(date +%Y%m%d_%H%M%S).log"

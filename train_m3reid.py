@@ -88,6 +88,23 @@ def get_m3plus_aug_probs(strength):
     raise ValueError(f'Unknown M3Plus augmentation strength: {strength}')
 
 
+def build_optimizer(args, params):
+    if args.optimizer == 'adam':
+        return optim.Adam(params, lr=args.lr, weight_decay=args.wd)
+    if args.optimizer == 'adamw':
+        return optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+    if args.optimizer == 'adam8bit':
+        try:
+            import bitsandbytes as bnb
+        except ImportError as exc:
+            raise RuntimeError(
+                'optimizer=adam8bit requires bitsandbytes on the training server. '
+                'Install it with: pip install bitsandbytes'
+            ) from exc
+        return bnb.optim.AdamW8bit(params, lr=args.lr, weight_decay=args.wd)
+    raise ValueError(f'Unsupported optimizer: {args.optimizer}')
+
+
 if __name__ == '__main__':
 
     # Arguments --------------------------------------------------------------------------------------------------------
@@ -116,6 +133,8 @@ if __name__ == '__main__':
     # -- Optim Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--lr', default=0.0002, type=float, help='Learning rate for adam optimizer')
     parser.add_argument('--wd', default=0.0005, type=float, help='Weight decay for adam optimizer')
+    parser.add_argument('--optimizer', default='adam', choices=['adam', 'adamw', 'adam8bit'],
+                        help='Optimizer. adam8bit requires bitsandbytes on Linux')
     parser.add_argument('--accum_steps', default=1, type=int,
                         help='Gradient accumulation steps for memory-limited GPUs')
 
@@ -138,6 +157,8 @@ if __name__ == '__main__':
                         help='Number of MVL attention heads per view')
     parser.add_argument('--feature_dropout', default=0.0, type=float,
                         help='Dropout applied before ID classifiers during training')
+    parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
+                        help='Checkpoint M3Plus attention/local heads to save activation memory')
     parser.add_argument('--sample_method', default=None, type=str,
                         choices=['norm_triplet', 'cross_modality_triplet', 'cross_modality_random',
                                  'cross_modality_identity', 'identity_cross_modality'],
@@ -293,7 +314,8 @@ if __name__ == '__main__':
     model = M3ReID(sample_seq_num, num_train_class,
                    use_enhancements=args.use_m3plus, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
-                   feature_dropout=args.feature_dropout).cuda()
+                   feature_dropout=args.feature_dropout,
+                   grad_checkpoint_head=args.grad_checkpoint_head).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
@@ -316,7 +338,7 @@ if __name__ == '__main__':
     criterion_dac_loss = SeparationLoss().cuda()
 
     # Optimizer --------------------------------------------------------------------------------------------------------
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    optimizer = build_optimizer(args, model.parameters())
     lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[80, 120], gamma=0.1)
 
     # Iteration --------------------------------------------------------------------------------------------------------
@@ -331,7 +353,8 @@ if __name__ == '__main__':
           f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}, '
           f'fp16={args.fp16}, eval_fp16={args.eval_fp16}, '
           f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
-          f'feature_dropout={args.feature_dropout}')
+          f'feature_dropout={args.feature_dropout}, '
+          f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}')
 
     best_score = -1
     best_result = None
