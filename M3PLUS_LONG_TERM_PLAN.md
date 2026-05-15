@@ -91,6 +91,19 @@ HITSZ_DIR=/your/path/HITSZ-VCM WORKERS=12 ./run_m3plus_t10_hitszvcm_v100.sh
 
 The V100 observed OOM at physical batch 24/32, while batch 16 used about 26.9GB / 32GB. Keep physical batch 16 for stable full runs. After the first HITSZ-VCM bs16 run plateaued below baseline, the HITSZ server script now uses `P_NUM=8 K_NUM=2 ACCUM_STEPS=2` by default: it keeps the same memory footprint but gives the batch-hard metric loss more identities and hard negatives. The scripts also default to `M3PLUS_AUG_STRENGTH=mild` and `TRIPLET_FRAME_WEIGHT=0.1` to reduce over-regularization from the extra weak-light/occlusion and frame-level hard mining.
 
+The current V100 retry scripts also use a lighter M3Plus head and faster validation schedule:
+
+```text
+PART_DIM=1024              # local part branch reduced from 2048
+FEATURE_DROPOUT=0.1        # ID classifier dropout, metric features unchanged
+EVAL_START_EPOCH=80        # skip expensive early validation
+TEST_INTERVAL=5            # validate every 5 epochs after epoch 80
+EARLY_STOP_PATIENCE=8      # stop after 8 validation rounds without avg Rank-1 improvement
+--eval_fp16                # faster validation feature extraction
+```
+
+This keeps the main MVL module at `MVL_NUM_HEADS=2` for accuracy, but cuts local-branch classifier width and avoids about 15 early validation passes on HITSZ-VCM. If time is more important than maximum accuracy, run a compact ablation with `MVL_NUM_HEADS=1 PART_DIM=512`; if accuracy drops, return to the default.
+
 To probe a little more GPU memory without changing code, try physical batch 18 once:
 
 ```bash

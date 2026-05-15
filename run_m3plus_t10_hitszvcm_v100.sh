@@ -10,9 +10,16 @@ P_NUM="${P_NUM:-8}"
 K_NUM="${K_NUM:-2}"
 TEST_BATCH_SIZE="${TEST_BATCH_SIZE:-32}"
 ACCUM_STEPS="${ACCUM_STEPS:-2}"
+MVL_NUM_HEADS="${MVL_NUM_HEADS:-2}"
+PART_DIM="${PART_DIM:-1024}"
+FEATURE_DROPOUT="${FEATURE_DROPOUT:-0.1}"
 M3PLUS_AUG_STRENGTH="${M3PLUS_AUG_STRENGTH:-mild}"
 TRIPLET_WEIGHT="${TRIPLET_WEIGHT:-0.5}"
 TRIPLET_FRAME_WEIGHT="${TRIPLET_FRAME_WEIGHT:-0.1}"
+EPOCHS="${EPOCHS:-180}"
+EVAL_START_EPOCH="${EVAL_START_EPOCH:-80}"
+TEST_INTERVAL="${TEST_INTERVAL:-5}"
+EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-8}"
 DESC="${DESC:-M3Plus_t10_v100_bs$((P_NUM * K_NUM))_acc${ACCUM_STEPS}}"
 
 mkdir -p "${LOG_DIR}"
@@ -36,13 +43,19 @@ python train_m3reid.py \
   --lr 0.0002 --wd 0.0005 \
   --accum_steps "${ACCUM_STEPS}" \
   --fp16 \
+  --eval_fp16 \
   --use_m3plus \
   --m3plus_aug_strength "${M3PLUS_AUG_STRENGTH}" \
+  --mvl_num_heads "${MVL_NUM_HEADS}" \
+  --part_dim "${PART_DIM}" \
+  --feature_dropout "${FEATURE_DROPOUT}" \
   --triplet_weight "${TRIPLET_WEIGHT}" \
   --triplet_frame_weight "${TRIPLET_FRAME_WEIGHT}" \
-  --epochs 200 \
+  --epochs "${EPOCHS}" \
   --log_interval 20 \
-  --test_interval 5 \
+  --eval_start_epoch "${EVAL_START_EPOCH}" \
+  --test_interval "${TEST_INTERVAL}" \
+  --early_stop_patience "${EARLY_STOP_PATIENCE}" \
   --save_interval 10 \
   --desc "${DESC}" \
   --gpu "${GPU}" \

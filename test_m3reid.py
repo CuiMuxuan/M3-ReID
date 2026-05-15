@@ -78,6 +78,12 @@ if __name__ == '__main__':
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID architecture used by M3Plus checkpoints')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
+    parser.add_argument('--part_dim', default=2048, type=int,
+                        help='Output dimension of the M3Plus local part branch')
+    parser.add_argument('--mvl_num_heads', default=2, type=int,
+                        help='Number of MVL attention heads per view')
+    parser.add_argument('--feature_dropout', default=0.0, type=float,
+                        help='Dropout value used by the checkpoint architecture')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
     parser.add_argument('--desc', type=str, default=None, help='Description for this testing process')
 
@@ -149,7 +155,9 @@ if __name__ == '__main__':
 
     # Model ------------------------------------------------------------------------------------------------------------
     model = M3ReID(sample_seq_num, num_train_class,
-                   use_enhancements=args.use_m3plus, part_num=args.part_num).cuda()
+                   use_enhancements=args.use_m3plus, part_num=args.part_num,
+                   mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
+                   feature_dropout=args.feature_dropout).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))

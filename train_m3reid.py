@@ -132,6 +132,12 @@ if __name__ == '__main__':
                         choices=['standard', 'mild', 'none'],
                         help='Strength of extra M3Plus low-light and block-occlusion augmentation')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
+    parser.add_argument('--part_dim', default=2048, type=int,
+                        help='Output dimension of the M3Plus local part branch')
+    parser.add_argument('--mvl_num_heads', default=2, type=int,
+                        help='Number of MVL attention heads per view')
+    parser.add_argument('--feature_dropout', default=0.0, type=float,
+                        help='Dropout applied before ID classifiers during training')
     parser.add_argument('--sample_method', default=None, type=str,
                         choices=['norm_triplet', 'cross_modality_triplet', 'cross_modality_random',
                                  'cross_modality_identity', 'identity_cross_modality'],
@@ -143,6 +149,10 @@ if __name__ == '__main__':
                         help='Cross entropy label smoothing. Defaults to 0.1 for M3Plus and 0.0 for baseline')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
+    parser.add_argument('--eval_start_epoch', default=1, type=int,
+                        help='First epoch allowed to run evaluation')
+    parser.add_argument('--early_stop_patience', default=0, type=int,
+                        help='Stop after this many evaluated rounds without avg Rank-1 improvement. Set 0 to disable')
     parser.add_argument('--save_interval', default=1, type=int, help='Interval of saving checkpoints. Set 0 to disable')
     parser.add_argument('--epochs', default=200, type=int, help='Total training epochs')
     parser.add_argument('--max_train_batches', default=None, type=int,
@@ -281,7 +291,9 @@ if __name__ == '__main__':
 
     # Model ------------------------------------------------------------------------------------------------------------
     model = M3ReID(sample_seq_num, num_train_class,
-                   use_enhancements=args.use_m3plus, part_num=args.part_num).cuda()
+                   use_enhancements=args.use_m3plus, part_num=args.part_num,
+                   mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
+                   feature_dropout=args.feature_dropout).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
@@ -317,11 +329,14 @@ if __name__ == '__main__':
           f'sample_method={sample_method}, label_smoothing={label_smoothing:.3f}, '
           f'enable_triplet_loss={enable_triplet_loss}, accum_steps={args.accum_steps}, '
           f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}, '
-          f'fp16={args.fp16}, eval_fp16={args.eval_fp16}')
+          f'fp16={args.fp16}, eval_fp16={args.eval_fp16}, '
+          f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
+          f'feature_dropout={args.feature_dropout}')
 
     best_score = -1
     best_result = None
     best_epoch = -1
+    stale_eval_count = 0
 
     if args.fp16: amp_scaler = torch.amp.GradScaler('cuda')
     for epoch in range(total_epoch_num):
@@ -437,7 +452,9 @@ if __name__ == '__main__':
 
         lr_scheduler.step()
 
-        if args.test_interval > 0 and (epoch + 1) % args.test_interval == 0:
+        should_eval = (args.test_interval > 0 and (epoch + 1) >= args.eval_start_epoch
+                       and (epoch + 1) % args.test_interval == 0)
+        if should_eval:
             # -- Test --------------------------------------------------------------------------------------------------
             model.eval()
 
@@ -553,6 +570,7 @@ if __name__ == '__main__':
             avg_r1 = (i2v_cmc[0] + v2i_cmc[0]) / 2
             if avg_r1 > best_score:
                 best_score = avg_r1
+                stale_eval_count = 0
                 best_epoch = epoch + 1
                 best_result = {
                     'i2v_cmc': i2v_cmc.detach().clone(),
@@ -563,6 +581,15 @@ if __name__ == '__main__':
                     'v2i_mINP': v2i_mINP.detach().clone(),
                 }
                 torch.save(model.state_dict(), os.path.join(modelckpt_dir, 'model_best.pth'))
+            else:
+                stale_eval_count += 1
+                print(f'No avg Rank-1 improvement for {stale_eval_count} evaluated round(s). '
+                      f'Best avg Rank-1: {best_score:.2%} @ epoch {best_epoch}.')
+
+            if args.early_stop_patience > 0 and stale_eval_count >= args.early_stop_patience:
+                print(f'Early stopping at epoch {epoch + 1}: no avg Rank-1 improvement for '
+                      f'{stale_eval_count} evaluated rounds.')
+                break
 
         if args.save_interval > 0 and (epoch + 1) % args.save_interval == 0:
             # -- Save --------------------------------------------------------------------------------------------------

@@ -37,7 +37,8 @@ class M3ReID(nn.Module):
     by Liang et al. See https://ieeexplore.ieee.org/document/11275868 (IEEE TIFS).
     """
 
-    def __init__(self, sample_seq_num, class_num, use_enhancements=False, part_num=4):
+    def __init__(self, sample_seq_num, class_num, use_enhancements=False, part_num=4,
+                 mvl_num_heads=2, part_dim=2048, feature_dropout=0.0):
         """
         Initialize the M3-ReID model.
 
@@ -78,19 +79,22 @@ class M3ReID(nn.Module):
             [NonLocal(2048, mode='THW') for i in range(non_layers[3])])
         self.NL_4_idx = sorted([layers[3] - (i + 1) for i in range(non_layers[3])])
 
-        num_heads = 2
+        num_heads = mvl_num_heads
         self.mvl_attention = MultiViewLearningAttention(self.embedding_dim, num_heads=num_heads, mode='gem')
 
         self.embedding_dim = self.embedding_dim * (num_heads * 3)
         if self.use_enhancements:
+            if part_dim <= 0:
+                raise ValueError('part_dim must be positive when M3Plus enhancements are enabled.')
             self.multi_scale_fusion = MultiScaleResidualFusion(low_channels=1024, high_channels=2048)
             self.feature_attention = LightweightChannelSpatialAttention(2048)
-            self.part_aggregation = PartGuidedAggregation(channels=2048, part_num=part_num, out_channels=2048)
-            self.embedding_dim += 2048
+            self.part_aggregation = PartGuidedAggregation(channels=2048, part_num=part_num, out_channels=part_dim)
+            self.embedding_dim += part_dim
 
         self.bn_neck = nn.BatchNorm1d(self.embedding_dim)
         nn.init.constant_(self.bn_neck.bias, 0)
         self.bn_neck.bias.requires_grad_(False)
+        self.feature_dropout = nn.Dropout(p=feature_dropout) if feature_dropout > 0 else nn.Identity()
 
         self.classifier_frame = nn.Linear(self.embedding_dim, class_num, bias=False)
         self.classifier = nn.Linear(self.embedding_dim, class_num, bias=False)
@@ -200,8 +204,8 @@ class M3ReID(nn.Module):
 
         if self.training:
             b, t, c = x_embed.shape
-            x_logits = self.classifier_frame(x_embed.reshape(b * t, c)).reshape(b, t, -1)
-            x_logits_mean = self.classifier(x_embed_mean)
+            x_logits = self.classifier_frame(self.feature_dropout(x_embed.reshape(b * t, c))).reshape(b, t, -1)
+            x_logits_mean = self.classifier(self.feature_dropout(x_embed_mean))
             return x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks
         else:
             return self.l2_norm(x_embed_mean)
