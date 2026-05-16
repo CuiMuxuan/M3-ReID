@@ -105,6 +105,12 @@ def build_optimizer(args, params):
     raise ValueError(f'Unsupported optimizer: {args.optimizer}')
 
 
+def parse_lr_milestones(milestones):
+    if milestones is None or milestones.strip() == '':
+        return []
+    return [int(item.strip()) for item in milestones.split(',') if item.strip()]
+
+
 if __name__ == '__main__':
 
     # Arguments --------------------------------------------------------------------------------------------------------
@@ -140,6 +146,8 @@ if __name__ == '__main__':
                         help='Optimizer. adam8bit requires bitsandbytes on Linux')
     parser.add_argument('--accum_steps', default=1, type=int,
                         help='Gradient accumulation steps for memory-limited GPUs')
+    parser.add_argument('--lr_milestones', default='80,120',
+                        help='Comma-separated epochs for MultiStepLR decay. Empty string disables milestone decay')
 
     # -- Other Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--fp16', action='store_true', default=False, help='Whether to use AMP')
@@ -327,13 +335,26 @@ if __name__ == '__main__':
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
+        removed_mismatch_keys = []
         for key in list(checkpoint.keys()):
             model_state_dict = model.state_dict()
             if key in model_state_dict:
                 if torch.is_tensor(checkpoint[key]) and checkpoint[key].shape != model_state_dict[key].shape:
                     print(f'Warning during loading weights - Auto remove mismatch key: {key}')
+                    removed_mismatch_keys.append(key)
                     checkpoint.pop(key)
-        model.load_state_dict(checkpoint, strict=False)
+        load_result = model.load_state_dict(checkpoint, strict=False)
+        print(f'Loaded checkpoint: {args.resume}')
+        print(f'Checkpoint load summary: loaded_keys={len(checkpoint)}, '
+              f'removed_mismatch_keys={len(removed_mismatch_keys)}, '
+              f'missing_keys={len(load_result.missing_keys)}, '
+              f'unexpected_keys={len(load_result.unexpected_keys)}')
+        if removed_mismatch_keys:
+            print(f'Removed mismatch keys preview: {removed_mismatch_keys[:12]}')
+        if load_result.missing_keys:
+            print(f'Missing keys preview: {load_result.missing_keys[:12]}')
+        if load_result.unexpected_keys:
+            print(f'Unexpected keys preview: {load_result.unexpected_keys[:12]}')
 
     # Loss -------------------------------------------------------------------------------------------------------------
     label_smoothing = args.id_label_smoothing
@@ -347,7 +368,8 @@ if __name__ == '__main__':
 
     # Optimizer --------------------------------------------------------------------------------------------------------
     optimizer = build_optimizer(args, model.parameters())
-    lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[80, 120], gamma=0.1)
+    lr_milestones = parse_lr_milestones(args.lr_milestones)
+    lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=lr_milestones, gamma=0.1)
 
     # Iteration --------------------------------------------------------------------------------------------------------
     total_epoch_num = args.epochs
@@ -363,7 +385,8 @@ if __name__ == '__main__':
           f'fp16={args.fp16}, eval_fp16={args.eval_fp16}, '
           f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
           f'feature_dropout={args.feature_dropout}, '
-          f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}')
+          f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
+          f'lr_milestones={lr_milestones}')
 
     best_score = -1
     best_result = None

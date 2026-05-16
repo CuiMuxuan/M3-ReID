@@ -39,6 +39,49 @@ Scheme decision rule:
 | One direction improves while the other regresses | keep the checkpoint, then test lower triplet weight or Scheme D. |
 | Both directions pass target | repeat with seed 1 before claiming the final result. |
 
+## Server Baseline Rerun
+
+Before Scheme B, rerun the original M3-ReID baseline on the same V100 server and dataset mount. This confirms whether the current server, CUDA/PyTorch stack, and uploaded datasets reproduce the provided baseline logs.
+
+Baseline scripts:
+
+```bash
+./run_baseline_t10_hitszvcm_v100.sh
+./run_baseline_t10_buptcampus_v100.sh
+```
+
+They intentionally omit `--use_m3plus`, keep the original README batch shape `P_NUM=4 K_NUM=8`, and run for `EPOCHS=200` by default because the provided 10-frame baselines peak late:
+
+```text
+HITSZ-VCM best epoch: 185
+BUPTCampus best epoch: 176
+```
+
+If baseline physical batch 32 OOMs on V100, retry with `K_NUM=4`. Mark that result as a server sanity check, not as a strict reproduction of the provided baseline logs.
+
+Run one dataset at a time:
+
+```bash
+cd /root/work/M3-ReID
+git pull
+chmod +x run_baseline_t10_hitszvcm_v100.sh run_baseline_t10_buptcampus_v100.sh
+tmux new -d -s m3_hitsz_base 'cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM ./run_baseline_t10_hitszvcm_v100.sh'
+```
+
+After HITSZ-VCM finishes:
+
+```bash
+cd /root/work/M3-ReID
+tmux new -d -s m3_bupt_base 'cd /root/work/M3-ReID && CONDA_ENV=base BUPT_DIR=/root/work/BUPTCampus ./run_baseline_t10_buptcampus_v100.sh'
+```
+
+Baseline rerun result rows:
+
+| Dataset | Seed | Best Epoch | i2v R1 | i2v mAP | v2i R1 | v2i mAP | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| HITSZ-VCM | 0 |  |  |  |  |  |  |
+| BUPTCampus | 0 |  |  |  |  |  |  |
+
 ## Scheme A: Part-Only Local Branch
 
 Goal: isolate local part descriptors plus hard cross-modality metric learning. This is intentionally not the previous full M3Plus setting.
@@ -87,6 +130,57 @@ Result row to fill after each run:
 | A | HITSZ-VCM | 0 |  |  |  |  |  |  |
 | A | BUPTCampus | 0 |  |  |  |  |  |  |
 
+## Scheme B: Baseline Warm-Start Fine-Tune
+
+Scheme B starts from the server baseline `model_best.pth`, then adds the part-only local branch with a smaller learning rate and short milestone schedule. The goal is to preserve the baseline global representation while training the new local descriptor and reset heads into a useful range.
+
+Fine-tune scripts:
+
+```bash
+./run_scheme_b_t10_hitszvcm_v100.sh
+./run_scheme_b_t10_buptcampus_v100.sh
+```
+
+Default Scheme B deltas:
+
+```text
+--resume ${BASELINE_CKPT}
+--use_m3plus
+--m3plus_mode part_only
+--m3plus_aug_strength none
+--sample_method identity_cross_modality
+--triplet_weight 0.15
+--triplet_frame_weight 0.00
+--id_label_smoothing 0.00
+--lr_milestones 30,50
+EPOCHS=60
+```
+
+Run HITSZ-VCM after its baseline is complete:
+
+```bash
+cd /root/work/M3-ReID
+BASELINE_CKPT=/root/work/M3-ReID/ckptlog/HITSZVCM/Time-XXXX_Baseline_t10_hitszvcm_v100_bs32/modelckpt/model_best.pth
+tmux new -d -s m3_hitsz_b "cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM BASELINE_CKPT=${BASELINE_CKPT} ./run_scheme_b_t10_hitszvcm_v100.sh"
+```
+
+Run BUPTCampus after its baseline is complete:
+
+```bash
+cd /root/work/M3-ReID
+BASELINE_CKPT=/root/work/M3-ReID/ckptlog/BUPTCampus/Time-XXXX_Baseline_t10_buptcampus_v100_bs32/modelckpt/model_best.pth
+tmux new -d -s m3_bupt_b "cd /root/work/M3-ReID && CONDA_ENV=base BUPT_DIR=/root/work/BUPTCampus BASELINE_CKPT=${BASELINE_CKPT} ./run_scheme_b_t10_buptcampus_v100.sh"
+```
+
+If the first Scheme B evaluation is already 3+ Rank-1 points below the baseline checkpoint, stop and move to Scheme D instead of spending the full 60 epochs.
+
+Scheme B result rows:
+
+| Scheme | Dataset | Seed | Baseline Checkpoint | Best Epoch | i2v R1 | i2v mAP | v2i R1 | v2i mAP | Decision |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| B | HITSZ-VCM | 0 |  |  |  |  |  |  |  |
+| B | BUPTCampus | 0 |  |  |  |  |  |  |  |
+
 ## Implemented Method
 
 The implementation is exposed through `--use_m3plus` while keeping the original baseline path available when the flag is omitted. `--m3plus_mode full` keeps the full enhanced path, while `--m3plus_mode part_only` enables Scheme A.
@@ -100,7 +194,7 @@ Changed modules:
 | Loss | `losses/metric_loss.py` | Added cross-modality batch-hard triplet loss. |
 | Loss | `losses/mma_loss.py` | Made invalid-batch fallback return a tensor for stable mixed precision training. |
 | Data | `data/transform.py` | Added weak low-light and block occlusion augmentations. |
-| Entry | `train_m3reid.py` | Added `--t`, `--use_m3plus`, `--m3plus_mode`, triplet hyperparameters, cross-modality sampler default, and M3Plus augmentation path. |
+| Entry | `train_m3reid.py` | Added `--t`, `--use_m3plus`, `--m3plus_mode`, `--lr_milestones`, triplet hyperparameters, cross-modality sampler default, checkpoint-load summary, and M3Plus augmentation path. |
 | Entry | `test_m3reid.py` | Added `--t`, `--use_m3plus`, and `--m3plus_mode` for matching checkpoints. |
 
 Core idea:
