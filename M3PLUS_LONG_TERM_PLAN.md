@@ -18,21 +18,90 @@ Secondary acceptance metric: mAP in both retrieval directions.
 
 The 10-frame track is selected because it is stronger than 6 frames on BUPTCampus and gives a better HITSZ-VCM v2i result in the logs.
 
+## Experiment Matrix
+
+We will run one controlled scheme at a time. Each scheme must report the same four numbers: i2v Rank-1, i2v mAP, v2i Rank-1, and v2i mAP. A scheme is considered successful only if both BUPTCampus and HITSZ-VCM reach the target table above on the same 10-frame protocol.
+
+| Scheme | Status | Core Change | Training Delta | Why It Is Tested |
+| --- | --- | --- | --- | --- |
+| A | ready to run | Baseline MVL + local part branch only + cross-modality batch-hard triplet | `--use_m3plus --m3plus_mode part_only --m3plus_aug_strength none --triplet_weight 0.35 --triplet_frame_weight 0.10 --id_label_smoothing 0.05` | Isolate the most common ReID gain source, local part descriptors, without the full M3Plus fusion and extra augmentation noise. |
+| B | queued | Two-stage transfer: baseline checkpoint warm start, then Scheme A/full M3Plus fine-tune | resume best baseline or best Scheme A, lower LR, 30-60 epoch fine-tune | Reduce scratch-training instability and preserve the original strong global representation. |
+| C | queued | Loss-level change: supervised contrastive or Circle-style metric head | keep model close to Scheme A, replace or down-weight current triplet | Test whether stronger metric geometry gives Rank-1 gains without adding more inference cost. |
+| D | queued | Gated local/global fusion | replace plain concatenation with a small gate/projection for global and part features | Prevent the part branch from overwhelming MVL features; likely useful if Scheme A mAP drops or one direction regresses. |
+| E | queued | Full M3Plus with conservative augmentation | `--m3plus_mode full`, mild or no weak-light/occlusion | Revisit multi-scale and attention only after the local branch baseline is understood. |
+
+Scheme decision rule:
+
+| Outcome After One Dataset | Decision |
+| --- | --- |
+| Best average Rank-1 is below baseline by more than 1 point by epoch 90 | stop this scheme on that dataset and move to next scheme. |
+| Best average Rank-1 is within 0.5 point of target | continue to epoch 130 and run the other dataset. |
+| One direction improves while the other regresses | keep the checkpoint, then test lower triplet weight or Scheme D. |
+| Both directions pass target | repeat with seed 1 before claiming the final result. |
+
+## Scheme A: Part-Only Local Branch
+
+Goal: isolate local part descriptors plus hard cross-modality metric learning. This is intentionally not the previous full M3Plus setting.
+
+Implementation switches:
+
+```text
+--use_m3plus
+--m3plus_mode part_only
+--m3plus_aug_strength none
+--sample_method identity_cross_modality
+--part_num 4
+--part_dim 2048
+--triplet_weight 0.35
+--triplet_frame_weight 0.10
+--id_label_smoothing 0.05
+```
+
+New server scripts:
+
+```bash
+./run_scheme_a_t10_hitszvcm_v100.sh
+./run_scheme_a_t10_buptcampus_v100.sh
+```
+
+Server tmux commands. Run one dataset at a time on a single V100:
+
+```bash
+cd /root/work/M3-ReID
+git pull
+chmod +x run_scheme_a_t10_hitszvcm_v100.sh run_scheme_a_t10_buptcampus_v100.sh
+tmux new -d -s m3_hitsz_a 'cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM ./run_scheme_a_t10_hitszvcm_v100.sh'
+```
+
+After HITSZ-VCM finishes, start BUPTCampus:
+
+```bash
+cd /root/work/M3-ReID
+tmux new -d -s m3_bupt_a 'cd /root/work/M3-ReID && CONDA_ENV=base BUPT_DIR=/root/work/BUPTCampus ./run_scheme_a_t10_buptcampus_v100.sh'
+```
+
+Result row to fill after each run:
+
+| Scheme | Dataset | Seed | Best Epoch | i2v R1 | i2v mAP | v2i R1 | v2i mAP | Decision |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| A | HITSZ-VCM | 0 |  |  |  |  |  |  |
+| A | BUPTCampus | 0 |  |  |  |  |  |  |
+
 ## Implemented Method
 
-The implementation is exposed through `--use_m3plus` while keeping the original baseline path available when the flag is omitted.
+The implementation is exposed through `--use_m3plus` while keeping the original baseline path available when the flag is omitted. `--m3plus_mode full` keeps the full enhanced path, while `--m3plus_mode part_only` enables Scheme A.
 
 Changed modules:
 
 | Area | File | Change |
 | --- | --- | --- |
 | Model | `models/modules/enhancement.py` | Added multi-scale residual fusion, lightweight channel-spatial attention, and part-guided local aggregation. |
-| Model | `models/model_m3reid.py` | Added optional M3Plus feature path and concatenated local part descriptor. |
+| Model | `models/model_m3reid.py` | Added optional M3Plus feature path, `full` / `part_only` mode selection, and concatenated local part descriptor. |
 | Loss | `losses/metric_loss.py` | Added cross-modality batch-hard triplet loss. |
 | Loss | `losses/mma_loss.py` | Made invalid-batch fallback return a tensor for stable mixed precision training. |
 | Data | `data/transform.py` | Added weak low-light and block occlusion augmentations. |
-| Entry | `train_m3reid.py` | Added `--t`, `--use_m3plus`, triplet hyperparameters, cross-modality sampler default, and M3Plus augmentation path. |
-| Entry | `test_m3reid.py` | Added `--t` and `--use_m3plus` for matching checkpoints. |
+| Entry | `train_m3reid.py` | Added `--t`, `--use_m3plus`, `--m3plus_mode`, triplet hyperparameters, cross-modality sampler default, and M3Plus augmentation path. |
+| Entry | `test_m3reid.py` | Added `--t`, `--use_m3plus`, and `--m3plus_mode` for matching checkpoints. |
 
 Core idea:
 

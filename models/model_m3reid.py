@@ -38,7 +38,7 @@ class M3ReID(nn.Module):
     by Liang et al. See https://ieeexplore.ieee.org/document/11275868 (IEEE TIFS).
     """
 
-    def __init__(self, sample_seq_num, class_num, use_enhancements=False, part_num=4,
+    def __init__(self, sample_seq_num, class_num, use_enhancements=False, m3plus_mode='full', part_num=4,
                  mvl_num_heads=2, part_dim=2048, feature_dropout=0.0,
                  grad_checkpoint_head=False):
         """
@@ -63,6 +63,11 @@ class M3ReID(nn.Module):
         self.sample_seq_num = sample_seq_num
         self.class_num = class_num
         self.use_enhancements = use_enhancements
+        if m3plus_mode not in ('full', 'part_only'):
+            raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
+        self.m3plus_mode = m3plus_mode
+        self.use_feature_enhancers = use_enhancements and m3plus_mode == 'full'
+        self.use_part_branch = use_enhancements and m3plus_mode in ('full', 'part_only')
         self.grad_checkpoint_head = grad_checkpoint_head
 
         self.backbone = resnet50(pretrained=True)
@@ -89,8 +94,10 @@ class M3ReID(nn.Module):
         if self.use_enhancements:
             if part_dim <= 0:
                 raise ValueError('part_dim must be positive when M3Plus enhancements are enabled.')
+        if self.use_feature_enhancers:
             self.multi_scale_fusion = MultiScaleResidualFusion(low_channels=1024, high_channels=2048)
             self.feature_attention = LightweightChannelSpatialAttention(2048)
+        if self.use_part_branch:
             self.part_aggregation = PartGuidedAggregation(channels=2048, part_num=part_num, out_channels=part_dim)
             self.embedding_dim += part_dim
 
@@ -194,14 +201,14 @@ class M3ReID(nn.Module):
                 x = x.permute(0, 2, 1, 3, 4).reshape(-1, C, H, W)
         global_feat = x
 
-        if self.use_enhancements:
+        if self.use_feature_enhancers:
             global_feat = self.multi_scale_fusion(layer3_feat, global_feat)
             global_feat = self._checkpoint_if_enabled(self.feature_attention, global_feat)
 
         _, C, H, W = global_feat.shape
         global_feat = global_feat.reshape(b, t, C, H, W)
         x_pool, mvl_att_masks = self._checkpoint_if_enabled(self._mvl_forward, global_feat)
-        if self.use_enhancements:
+        if self.use_part_branch:
             part_pool = self._checkpoint_if_enabled(self.part_aggregation, global_feat)
             x_pool = torch.cat([x_pool, part_pool], dim=1)
 

@@ -150,6 +150,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
+    parser.add_argument('--m3plus_mode', default='full', choices=['full', 'part_only'],
+                        help='M3Plus architecture mode. full enables multi-scale, attention, and part branch; part_only keeps only the local part branch')
     parser.add_argument('--m3plus_aug_strength', default='standard',
                         choices=['standard', 'mild', 'none'],
                         help='Strength of extra M3Plus low-light and block-occlusion augmentation')
@@ -318,7 +320,7 @@ if __name__ == '__main__':
 
     # Model ------------------------------------------------------------------------------------------------------------
     model = M3ReID(sample_seq_num, num_train_class,
-                   use_enhancements=args.use_m3plus, part_num=args.part_num,
+                   use_enhancements=args.use_m3plus, m3plus_mode=args.m3plus_mode, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout,
                    grad_checkpoint_head=args.grad_checkpoint_head).cuda()
@@ -354,6 +356,7 @@ if __name__ == '__main__':
         sample_method = 'identity_cross_modality' if args.use_m3plus else 'norm_triplet'
     enable_triplet_loss = args.use_m3plus and args.triplet_weight > 0
     print(f'Effective setting: sample_seq_num={sample_seq_num}, use_m3plus={args.use_m3plus}, '
+          f'm3plus_mode={args.m3plus_mode}, '
           f'sample_method={sample_method}, label_smoothing={label_smoothing:.3f}, '
           f'enable_triplet_loss={enable_triplet_loss}, accum_steps={args.accum_steps}, '
           f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}, '

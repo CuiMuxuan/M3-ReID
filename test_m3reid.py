@@ -77,6 +77,8 @@ if __name__ == '__main__':
                         help='Enable cuDNN benchmark for fixed image sizes')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID architecture used by M3Plus checkpoints')
+    parser.add_argument('--m3plus_mode', default='full', choices=['full', 'part_only'],
+                        help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,
                         help='Output dimension of the M3Plus local part branch')
@@ -157,7 +159,7 @@ if __name__ == '__main__':
 
     # Model ------------------------------------------------------------------------------------------------------------
     model = M3ReID(sample_seq_num, num_train_class,
-                   use_enhancements=args.use_m3plus, part_num=args.part_num,
+                   use_enhancements=args.use_m3plus, m3plus_mode=args.m3plus_mode, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout,
                    grad_checkpoint_head=args.grad_checkpoint_head).cuda()
