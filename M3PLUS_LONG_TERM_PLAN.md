@@ -89,22 +89,38 @@ BUPT_DIR=/your/path/BUPTCampus WORKERS=12 ./run_m3plus_t10_buptcampus_v100.sh
 HITSZ_DIR=/your/path/HITSZ-VCM WORKERS=12 ./run_m3plus_t10_hitszvcm_v100.sh
 ```
 
-The V100 observed OOM at physical batch 24/32, while batch 16 used about 26.9GB / 32GB. Keep physical batch 16 for stable full runs. After the first HITSZ-VCM bs16 run plateaued below baseline, the HITSZ server script now uses `P_NUM=8 K_NUM=2 ACCUM_STEPS=2` by default: it keeps the same memory footprint but gives the batch-hard metric loss more identities and hard negatives. The scripts also default to `M3PLUS_AUG_STRENGTH=mild` and `TRIPLET_FRAME_WEIGHT=0.1` to reduce over-regularization from the extra weak-light/occlusion and frame-level hard mining.
+The V100 observed OOM at physical batch 24/32, while physical batch 16 is stable. Keep physical batch 16 for full runs.
 
-The current V100 retry scripts also use a lighter M3Plus head and faster validation schedule:
+The `P_NUM=8 K_NUM=2 ACCUM_STEPS=2`, AdamW, compact part branch retry was worse on HITSZ-VCM:
 
 ```text
-PART_DIM=1024              # local part branch reduced from 2048
-FEATURE_DROPOUT=0.1        # ID classifier dropout, metric features unchanged
-OPTIMIZER=adamw            # decoupled weight decay, better default than Adam for this retry
-EPOCHS=130                 # expected sufficient based on the first plateau around 95-105
-EVAL_START_EPOCH=60        # skip expensive early validation
-TEST_INTERVAL=5            # validate every 5 epochs after epoch 60
-EARLY_STOP_PATIENCE=6      # stop after 6 validation rounds without avg Rank-1 improvement
+Run: M3Plus_t10_v100_bs16_acc2
+Best average Rank-1: Epoch 60
+i2v: r1 62.24, mAP 46.57
+v2i: r1 64.46, mAP 47.72
+Conclusion: do not continue this configuration.
+```
+
+The current default scripts return to the stronger quality setting while keeping DataLoader stability fixes:
+
+
+```text
+P_NUM=4
+K_NUM=4
+ACCUM_STEPS=1
+PART_DIM=2048
+FEATURE_DROPOUT=0.0
+OPTIMIZER=adam
+M3PLUS_AUG_STRENGTH=standard
+TRIPLET_FRAME_WEIGHT=0.25
+EPOCHS=130
+EVAL_START_EPOCH=80        # skip expensive early validation
+TEST_INTERVAL=5            # validate every 5 epochs after epoch 80
+EARLY_STOP_PATIENCE=8
 --eval_fp16                # faster validation feature extraction
 ```
 
-This keeps the main MVL module at `MVL_NUM_HEADS=2` for accuracy, but cuts local-branch classifier width and avoids many early validation passes on HITSZ-VCM. AMP is already enabled for both training and evaluation. Gradient accumulation is kept at `ACCUM_STEPS=2` so physical batch 16 has an effective batch of 32.
+AMP is enabled for both training and evaluation. The main time saving is skipping early validation; the training recipe itself stays close to the best observed run.
 
 Optional memory experiments:
 
