@@ -62,6 +62,8 @@ class MultiModalityAlignmentLoss(nn.Module):
 
         m_labels_unique = torch.unique(m_labels)
         m_num = len(m_labels_unique)
+        if m_num < 2:
+            return embeddings.new_zeros(())
 
         embeddings_list = [embeddings[m_labels == m_label] for m_label in m_labels_unique]
         id_labels_list = [id_labels[m_labels == m_label] for m_label in m_labels_unique]
