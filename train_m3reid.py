@@ -105,6 +105,23 @@ def build_optimizer(args, params):
     raise ValueError(f'Unsupported optimizer: {args.optimizer}')
 
 
+def build_train_params(args, model):
+    if args.m3plus_mode != 'dual_fusion' or args.part_lr_mult == 1.0:
+        return model.parameters()
+
+    part_prefixes = ('part_aggregation', 'part_bn_neck', 'part_classifier')
+    base_params, part_params = [], []
+    for name, param in model.named_parameters():
+        if name.startswith(part_prefixes):
+            part_params.append(param)
+        else:
+            base_params.append(param)
+    return [
+        {'params': base_params, 'lr': args.lr},
+        {'params': part_params, 'lr': args.lr * args.part_lr_mult},
+    ]
+
+
 def parse_lr_milestones(milestones):
     if milestones is None or milestones.strip() == '':
         return []
@@ -158,8 +175,9 @@ if __name__ == '__main__':
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
-    parser.add_argument('--m3plus_mode', default='full', choices=['full', 'part_only', 'local_residual'],
-                        help='M3Plus architecture mode. full enables all enhancers; part_only concatenates a local branch; local_residual adds a baseline-compatible local residual')
+    parser.add_argument('--m3plus_mode', default='full',
+                        choices=['full', 'part_only', 'local_residual', 'dual_fusion'],
+                        help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='standard',
                         choices=['standard', 'mild', 'none'],
                         help='Strength of extra M3Plus low-light and block-occlusion augmentation')
@@ -170,6 +188,12 @@ if __name__ == '__main__':
                         help='Number of MVL attention heads per view')
     parser.add_argument('--feature_dropout', default=0.0, type=float,
                         help='Dropout applied before ID classifiers during training')
+    parser.add_argument('--fusion_alpha', default=0.2, type=float,
+                        help='Local feature weight used by dual_fusion inference')
+    parser.add_argument('--part_lr_mult', default=1.0, type=float,
+                        help='Learning-rate multiplier for dual_fusion local branch parameters')
+    parser.add_argument('--freeze_base_epochs', default=0, type=int,
+                        help='For dual_fusion, train only local branch for this many initial epochs')
     parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
                         help='Checkpoint M3Plus attention/local heads to save activation memory')
     parser.add_argument('--sample_method', default=None, type=str,
@@ -181,6 +205,12 @@ if __name__ == '__main__':
     parser.add_argument('--triplet_margin', default=0.3, type=float, help='Margin for hard triplet loss when soft margin is disabled')
     parser.add_argument('--id_label_smoothing', default=None, type=float,
                         help='Cross entropy label smoothing. Defaults to 0.1 for M3Plus and 0.0 for baseline')
+    parser.add_argument('--part_id_weight', default=0.0, type=float,
+                        help='Weight of dual_fusion local branch ID loss')
+    parser.add_argument('--part_triplet_weight', default=0.0, type=float,
+                        help='Weight of dual_fusion local branch cross-modality triplet loss')
+    parser.add_argument('--part_mma_weight', default=0.0, type=float,
+                        help='Weight of dual_fusion local branch modality alignment loss')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -330,7 +360,7 @@ if __name__ == '__main__':
     model = M3ReID(sample_seq_num, num_train_class,
                    use_enhancements=args.use_m3plus, m3plus_mode=args.m3plus_mode, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
-                   feature_dropout=args.feature_dropout,
+                   feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
                    grad_checkpoint_head=args.grad_checkpoint_head).cuda()
 
     if args.resume:
@@ -367,7 +397,7 @@ if __name__ == '__main__':
     criterion_dac_loss = SeparationLoss().cuda()
 
     # Optimizer --------------------------------------------------------------------------------------------------------
-    optimizer = build_optimizer(args, model.parameters())
+    optimizer = build_optimizer(args, build_train_params(args, model))
     lr_milestones = parse_lr_milestones(args.lr_milestones)
     lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=lr_milestones, gamma=0.1)
 
@@ -384,7 +414,10 @@ if __name__ == '__main__':
           f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}, '
           f'fp16={args.fp16}, eval_fp16={args.eval_fp16}, '
           f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
-          f'feature_dropout={args.feature_dropout}, '
+          f'feature_dropout={args.feature_dropout}, fusion_alpha={args.fusion_alpha}, '
+          f'part_lr_mult={args.part_lr_mult}, freeze_base_epochs={args.freeze_base_epochs}, '
+          f'part_id_weight={args.part_id_weight}, part_triplet_weight={args.part_triplet_weight}, '
+          f'part_mma_weight={args.part_mma_weight}, '
           f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
           f'lr_milestones={lr_milestones}')
 
@@ -419,6 +452,13 @@ if __name__ == '__main__':
 
         # -- Train -----------------------------------------------------------------------------------------------------
         model.train()
+        if args.m3plus_mode == 'dual_fusion':
+            base_trainable = epoch >= args.freeze_base_epochs
+            model.set_scheme_d_base_trainable(base_trainable)
+            if epoch == 0 and not base_trainable:
+                print(f'Scheme D warmup: freezing baseline global branch for {args.freeze_base_epochs} epoch(s).')
+            if epoch == args.freeze_base_epochs and args.freeze_base_epochs > 0:
+                print('Scheme D warmup complete: unfreezing baseline global branch.')
         s_time = time.time()
         optimizer.zero_grad()
         for batch_idx, batch_data in enumerate(train_loader):
@@ -430,7 +470,12 @@ if __name__ == '__main__':
             labels = track_pid.cuda(non_blocking=args.non_blocking)
 
             with torch.amp.autocast(device_type='cuda', enabled=args.fp16):
-                x_embed, x_embed_m, x_logits, x_logits_m, mvl_att_masks = model(inputs)
+                model_outputs = model(inputs)
+                if len(model_outputs) == 5:
+                    x_embed, x_embed_m, x_logits, x_logits_m, mvl_att_masks = model_outputs
+                    part_aux = None
+                else:
+                    x_embed, x_embed_m, x_logits, x_logits_m, mvl_att_masks, part_aux = model_outputs
                 id_labels = labels
                 m_labels = track_mid.cuda(non_blocking=args.non_blocking)
 
@@ -453,6 +498,33 @@ if __name__ == '__main__':
                     loss_triplet = x_embed_m.new_zeros(())
                     loss_triplet_frames = x_embed_m.new_zeros(())
 
+                loss_part_id = x_embed_m.new_zeros(())
+                loss_part_mma = x_embed_m.new_zeros(())
+                loss_part_triplet = x_embed_m.new_zeros(())
+                if part_aux is not None:
+                    part_embed = part_aux['part_embed']
+                    part_embed_m = part_aux['part_embed_mean']
+                    part_logits = part_aux['part_logits']
+                    part_logits_m = part_aux['part_logits_mean']
+                    part_b, part_t, part_c = part_embed.shape
+                    loss_part_id = criterion_ce_loss(part_logits_m, labels)
+                    loss_part_id = loss_part_id + criterion_ce_loss(
+                        part_logits.reshape(part_b * part_t, -1), id_labels.repeat_interleave(part_t)
+                    )
+                    loss_part_mma = criterion_mma_loss(part_embed_m, id_labels, m_labels)
+                    loss_part_mma = loss_part_mma + criterion_mma_loss(
+                        part_embed.reshape(part_b * part_t, part_c),
+                        id_labels.repeat_interleave(part_t),
+                        m_labels.repeat_interleave(part_t),
+                    )
+                    loss_part_triplet = criterion_triplet_loss(part_embed_m, id_labels, m_labels)
+                    loss_part_triplet_frames = criterion_triplet_loss(
+                        part_embed.reshape(part_b * part_t, part_c),
+                        id_labels.repeat_interleave(part_t),
+                        m_labels.repeat_interleave(part_t),
+                    )
+                    loss_part_triplet = loss_part_triplet + args.triplet_frame_weight * loss_part_triplet_frames
+
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
 
@@ -463,6 +535,9 @@ if __name__ == '__main__':
             loss = loss_mid + loss_mma + loss_ofr + loss_dac
             if enable_triplet_loss:
                 loss = loss + args.triplet_weight * loss_triplet
+            loss = loss + args.part_id_weight * loss_part_id
+            loss = loss + args.part_mma_weight * loss_part_mma
+            loss = loss + args.part_triplet_weight * loss_part_triplet
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -494,6 +569,8 @@ if __name__ == '__main__':
                       f'loss_mid: {loss_mid.data:.4f} '
                       f'loss_mma: {loss_mma.data:.4f} '
                       f'loss_triplet: {loss_triplet.data:.4f} '
+                      f'loss_part_id: {loss_part_id.data:.4f} '
+                      f'loss_part_triplet: {loss_part_triplet.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -502,6 +579,9 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_mid', loss_mid.data, iter_num)
                 writer.add_scalar('metric/loss_mma', loss_mma.data, iter_num)
                 writer.add_scalar('metric/loss_triplet', loss_triplet.data, iter_num)
+                writer.add_scalar('metric/loss_part_id', loss_part_id.data, iter_num)
+                writer.add_scalar('metric/loss_part_mma', loss_part_mma.data, iter_num)
+                writer.add_scalar('metric/loss_part_triplet', loss_part_triplet.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
@@ -515,8 +595,9 @@ if __name__ == '__main__':
 
             s_time = time.time()
 
-            query_embeddings = torch.zeros((num_query, model.embedding_dim)).cuda()
-            gallery_embeddings = torch.zeros((num_gallery, model.embedding_dim)).cuda()
+            eval_embedding_dim = getattr(model, 'output_dim', model.embedding_dim)
+            query_embeddings = torch.zeros((num_query, eval_embedding_dim)).cuda()
+            gallery_embeddings = torch.zeros((num_gallery, eval_embedding_dim)).cuda()
             query_ptr, gallery_ptr = 0, 0
             q_pids, q_cids, q_mids = [], [], []
             g_pids, g_cids, g_mids = [], [], []

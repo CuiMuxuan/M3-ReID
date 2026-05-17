@@ -27,7 +27,7 @@ We will run one controlled scheme at a time. Each scheme must report the same fo
 | A | ready to run | Baseline MVL + local part branch only + cross-modality batch-hard triplet | `--use_m3plus --m3plus_mode part_only --m3plus_aug_strength none --triplet_weight 0.35 --triplet_frame_weight 0.10 --id_label_smoothing 0.05` | Isolate the most common ReID gain source, local part descriptors, without the full M3Plus fusion and extra augmentation noise. |
 | B | queued | Baseline checkpoint warm start with a zero-init local residual branch | resume best baseline, lower LR, 30-60 epoch fine-tune | Preserve the original strong global representation while adding local part cues without changing the baseline embedding shape. |
 | C | queued | Loss-level change: supervised contrastive or Circle-style metric head | keep model close to Scheme A, replace or down-weight current triplet | Test whether stronger metric geometry gives Rank-1 gains without adding more inference cost. |
-| D | queued | Stronger gated local/global fusion | replace plain concatenation with a learned gate/projection for global and part features | Prevent the part branch from overwhelming MVL features; likely useful if Scheme B residual gains saturate below target. |
+| D | ready to run | Baseline-preserving dual global/local fusion | warm-start baseline, freeze global branch for 5 epochs, train local part branch with its own ID + triplet losses, then fine-tune with weighted late fusion | Prevent the part branch from overwhelming MVL features while still giving it direct learning signal; main route after Scheme B stayed below baseline. |
 | E | queued | Full M3Plus with conservative augmentation | `--m3plus_mode full`, mild or no weak-light/occlusion | Revisit multi-scale and attention only after the local branch baseline is understood. |
 
 Scheme decision rule:
@@ -199,6 +199,78 @@ Scheme B result rows:
 | B | HITSZ-VCM | 0 |  |  |  |  |  |  |  |
 | B | BUPTCampus | 0 |  |  |  |  |  |  |  |
 
+## Scheme D: Baseline-Preserving Dual Global/Local Fusion
+
+Scheme D keeps the loaded baseline global MVL representation and classifier shape intact, then adds a separately supervised local part branch. Unlike Scheme B, the local branch is not injected into the global embedding during training. Inference uses weighted late fusion:
+
+```text
+feature = concat(sqrt(1-alpha) * norm(global), sqrt(alpha) * norm(local))
+```
+
+Default alpha is `0.20`, so the baseline global descriptor remains dominant while the local descriptor can improve hard identity ordering.
+
+Implementation switches:
+
+```text
+--resume ${BASELINE_CKPT}
+--use_m3plus
+--m3plus_mode dual_fusion
+--m3plus_aug_strength none
+--sample_method identity_cross_modality
+--fusion_alpha 0.20
+--freeze_base_epochs 5
+--lr 0.00001
+--part_lr_mult 30.0
+--triplet_weight 0.05
+--triplet_frame_weight 0.10
+--part_id_weight 0.50
+--part_triplet_weight 0.35
+--part_mma_weight 0.05
+--id_label_smoothing 0.05
+--lr_milestones 40,60
+EPOCHS=80
+```
+
+New server scripts:
+
+```bash
+./run_scheme_d_t10_hitszvcm_v100.sh
+./run_scheme_d_t10_buptcampus_v100.sh
+```
+
+Run HITSZ-VCM first:
+
+```bash
+cd /root/work/M3-ReID
+git pull
+chmod +x run_scheme_d_t10_hitszvcm_v100.sh run_scheme_d_t10_buptcampus_v100.sh
+tmux new -d -s m3_hitsz_d 'cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM ./run_scheme_d_t10_hitszvcm_v100.sh'
+```
+
+Run BUPTCampus after its baseline checkpoint is available:
+
+```bash
+cd /root/work/M3-ReID
+BASELINE_CKPT=/root/work/M3-ReID/ckptlog/BUPTCampus/Time-XXXX_Baseline_t10_buptcampus_v100_bs32/modelckpt/model_best.pth
+tmux new -d -s m3_bupt_d "cd /root/work/M3-ReID && CONDA_ENV=base BUPT_DIR=/root/work/BUPTCampus BASELINE_CKPT=${BASELINE_CKPT} ./run_scheme_d_t10_buptcampus_v100.sh"
+```
+
+Decision rule for Scheme D:
+
+| Observation | Decision |
+| --- | --- |
+| Epoch 5 is more than 2 Rank-1 points below the loaded baseline in both directions | run a checkpoint-only eval with `FUSION_ALPHA=0.10`; if still low, inspect checkpoint loading before continuing. |
+| Best epoch by 30 is still below baseline average Rank-1 by more than 0.5 | stop this alpha and retry `FUSION_ALPHA=0.10 PART_TRIPLET_WEIGHT=0.20`. |
+| One direction improves while the other regresses | keep the checkpoint and test alpha sweep `0.10,0.15,0.20,0.25` with `test_m3reid.py`. |
+| Average Rank-1 exceeds baseline by at least 1 point | continue to 80 epochs and run the other dataset. |
+
+Scheme D result rows:
+
+| Scheme | Dataset | Seed | Baseline Checkpoint | Best Epoch | i2v R1 | i2v mAP | v2i R1 | v2i mAP | Decision |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| D | HITSZ-VCM | 0 | HITSZVCM_t10_bs16_seed0_epoch105_model_best.pth |  |  |  |  |  |  |
+| D | BUPTCampus | 0 |  |  |  |  |  |  |  |
+
 ## Implemented Method
 
 The implementation is exposed through `--use_m3plus` while keeping the original baseline path available when the flag is omitted. `--m3plus_mode full` keeps the full enhanced path, while `--m3plus_mode part_only` enables Scheme A.
@@ -214,6 +286,15 @@ Changed modules:
 | Data | `data/transform.py` | Added weak low-light and block occlusion augmentations. |
 | Entry | `train_m3reid.py` | Added `--t`, `--use_m3plus`, `--m3plus_mode`, `--lr_milestones`, triplet hyperparameters, cross-modality sampler default, checkpoint-load summary, and M3Plus augmentation path. |
 | Entry | `test_m3reid.py` | Added `--t`, `--use_m3plus`, and `--m3plus_mode` for matching checkpoints. |
+
+Additional Scheme D changes:
+
+| Area | File | Change |
+| --- | --- | --- |
+| Model | `models/model_m3reid.py` | Added `dual_fusion` mode, a separately supervised local BNNeck/classifier, base-branch freeze helper, and weighted global/local inference feature concatenation. |
+| Entry | `train_m3reid.py` | Added Scheme D local loss weights, part LR multiplier, base freeze warmup, fusion alpha, and output-dimension-safe validation. |
+| Entry | `test_m3reid.py` | Added `dual_fusion` and `--fusion_alpha` support for alpha sweeps. |
+| Scripts | `run_scheme_d_t10_hitszvcm_v100.sh`, `run_scheme_d_t10_buptcampus_v100.sh` | Added V100 run scripts for warm-start dual-fusion fine-tuning. |
 
 Core idea:
 

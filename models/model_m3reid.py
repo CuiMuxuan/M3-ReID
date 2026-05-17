@@ -39,7 +39,7 @@ class M3ReID(nn.Module):
     """
 
     def __init__(self, sample_seq_num, class_num, use_enhancements=False, m3plus_mode='full', part_num=4,
-                 mvl_num_heads=2, part_dim=2048, feature_dropout=0.0,
+                 mvl_num_heads=2, part_dim=2048, feature_dropout=0.0, fusion_alpha=0.2,
                  grad_checkpoint_head=False):
         """
         Initialize the M3-ReID model.
@@ -63,12 +63,14 @@ class M3ReID(nn.Module):
         self.sample_seq_num = sample_seq_num
         self.class_num = class_num
         self.use_enhancements = use_enhancements
-        if m3plus_mode not in ('full', 'part_only', 'local_residual'):
+        if m3plus_mode not in ('full', 'part_only', 'local_residual', 'dual_fusion'):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
         self.use_feature_enhancers = use_enhancements and m3plus_mode == 'full'
-        self.use_part_branch = use_enhancements and m3plus_mode in ('full', 'part_only', 'local_residual')
+        self.use_part_branch = use_enhancements and m3plus_mode in ('full', 'part_only', 'local_residual', 'dual_fusion')
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
+        self.use_dual_fusion = use_enhancements and m3plus_mode == 'dual_fusion'
+        self.fusion_alpha = float(fusion_alpha)
         self.grad_checkpoint_head = grad_checkpoint_head
 
         self.backbone = resnet50(pretrained=True)
@@ -104,6 +106,12 @@ class M3ReID(nn.Module):
                 self.part_residual = nn.Linear(part_dim, self.embedding_dim, bias=False)
                 nn.init.zeros_(self.part_residual.weight)
                 self.part_residual_scale = nn.Parameter(torch.tensor(0.1))
+            elif self.use_dual_fusion:
+                self.part_bn_neck = nn.BatchNorm1d(part_dim)
+                nn.init.constant_(self.part_bn_neck.bias, 0)
+                self.part_bn_neck.bias.requires_grad_(False)
+                self.part_classifier_frame = nn.Linear(part_dim, class_num, bias=False)
+                self.part_classifier = nn.Linear(part_dim, class_num, bias=False)
             else:
                 self.embedding_dim += part_dim
 
@@ -116,6 +124,7 @@ class M3ReID(nn.Module):
         self.classifier = nn.Linear(self.embedding_dim, class_num, bias=False)
 
         self.l2_norm = Normalize(power=2)
+        self.output_dim = self.embedding_dim + part_dim if self.use_dual_fusion else self.embedding_dim
 
     def _checkpoint_if_enabled(self, fn, *args):
         if self.training and self.grad_checkpoint_head:
@@ -124,6 +133,20 @@ class M3ReID(nn.Module):
 
     def _mvl_forward(self, global_feat):
         return self.mvl_attention(global_feat)
+
+    def set_scheme_d_base_trainable(self, trainable):
+        if not self.use_dual_fusion:
+            return
+        part_prefixes = ('part_aggregation', 'part_bn_neck', 'part_classifier')
+        for name, param in self.named_parameters():
+            param.requires_grad_(trainable or name.startswith(part_prefixes))
+
+        base_modules = [
+            self.backbone, self.NL_1, self.NL_2, self.NL_3, self.NL_4,
+            self.mvl_attention, self.bn_neck, self.classifier_frame, self.classifier,
+        ]
+        for module in base_modules:
+            module.train(trainable)
 
     def forward(self, inputs):
         """
@@ -214,11 +237,12 @@ class M3ReID(nn.Module):
         _, C, H, W = global_feat.shape
         global_feat = global_feat.reshape(b, t, C, H, W)
         x_pool, mvl_att_masks = self._checkpoint_if_enabled(self._mvl_forward, global_feat)
+        part_pool = None
         if self.use_part_branch:
             part_pool = self._checkpoint_if_enabled(self.part_aggregation, global_feat)
             if self.use_local_residual:
                 x_pool = x_pool + self.part_residual_scale * self.part_residual(part_pool)
-            else:
+            elif not self.use_dual_fusion:
                 x_pool = torch.cat([x_pool, part_pool], dim=1)
 
         x_embed = self.bn_neck(x_pool)
@@ -229,10 +253,36 @@ class M3ReID(nn.Module):
         x_embed = x_embed.reshape(-1, t, c)
         x_embed_mean = torch.mean(x_embed, dim=1)
 
+        part_aux = None
+        if self.use_dual_fusion:
+            part_embed = self.part_bn_neck(part_pool)
+            part_embed = part_embed.reshape(-1, t, part_embed.shape[-1])
+            part_embed_mean = torch.mean(part_embed, dim=1)
+            part_aux = (part_embed, part_embed_mean)
+
         if self.training:
             b, t, c = x_embed.shape
             x_logits = self.classifier_frame(self.feature_dropout(x_embed.reshape(b * t, c))).reshape(b, t, -1)
             x_logits_mean = self.classifier(self.feature_dropout(x_embed_mean))
+            if self.use_dual_fusion:
+                part_embed, part_embed_mean = part_aux
+                part_b, part_t, part_c = part_embed.shape
+                part_logits = self.part_classifier_frame(
+                    self.feature_dropout(part_embed.reshape(part_b * part_t, part_c))
+                ).reshape(part_b, part_t, -1)
+                part_logits_mean = self.part_classifier(self.feature_dropout(part_embed_mean))
+                return (x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks,
+                        {
+                            'part_embed': part_embed,
+                            'part_embed_mean': part_embed_mean,
+                            'part_logits': part_logits,
+                            'part_logits_mean': part_logits_mean,
+                        })
             return x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks
         else:
+            if self.use_dual_fusion:
+                alpha = min(max(self.fusion_alpha, 0.0), 1.0)
+                global_eval = self.l2_norm(x_embed_mean) * ((1.0 - alpha) ** 0.5)
+                part_eval = self.l2_norm(part_aux[1]) * (alpha ** 0.5)
+                return torch.cat([global_eval, part_eval], dim=1)
             return self.l2_norm(x_embed_mean)
