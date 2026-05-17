@@ -77,7 +77,7 @@ if __name__ == '__main__':
                         help='Enable cuDNN benchmark for fixed image sizes')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID architecture used by M3Plus checkpoints')
-    parser.add_argument('--m3plus_mode', default='full', choices=['full', 'part_only'],
+    parser.add_argument('--m3plus_mode', default='full', choices=['full', 'part_only', 'local_residual'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,

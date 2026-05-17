@@ -63,11 +63,12 @@ class M3ReID(nn.Module):
         self.sample_seq_num = sample_seq_num
         self.class_num = class_num
         self.use_enhancements = use_enhancements
-        if m3plus_mode not in ('full', 'part_only'):
+        if m3plus_mode not in ('full', 'part_only', 'local_residual'):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
         self.use_feature_enhancers = use_enhancements and m3plus_mode == 'full'
-        self.use_part_branch = use_enhancements and m3plus_mode in ('full', 'part_only')
+        self.use_part_branch = use_enhancements and m3plus_mode in ('full', 'part_only', 'local_residual')
+        self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
         self.grad_checkpoint_head = grad_checkpoint_head
 
         self.backbone = resnet50(pretrained=True)
@@ -99,7 +100,12 @@ class M3ReID(nn.Module):
             self.feature_attention = LightweightChannelSpatialAttention(2048)
         if self.use_part_branch:
             self.part_aggregation = PartGuidedAggregation(channels=2048, part_num=part_num, out_channels=part_dim)
-            self.embedding_dim += part_dim
+            if self.use_local_residual:
+                self.part_residual = nn.Linear(part_dim, self.embedding_dim, bias=False)
+                nn.init.zeros_(self.part_residual.weight)
+                self.part_residual_scale = nn.Parameter(torch.tensor(0.1))
+            else:
+                self.embedding_dim += part_dim
 
         self.bn_neck = nn.BatchNorm1d(self.embedding_dim)
         nn.init.constant_(self.bn_neck.bias, 0)
@@ -210,7 +216,10 @@ class M3ReID(nn.Module):
         x_pool, mvl_att_masks = self._checkpoint_if_enabled(self._mvl_forward, global_feat)
         if self.use_part_branch:
             part_pool = self._checkpoint_if_enabled(self.part_aggregation, global_feat)
-            x_pool = torch.cat([x_pool, part_pool], dim=1)
+            if self.use_local_residual:
+                x_pool = x_pool + self.part_residual_scale * self.part_residual(part_pool)
+            else:
+                x_pool = torch.cat([x_pool, part_pool], dim=1)
 
         x_embed = self.bn_neck(x_pool)
 

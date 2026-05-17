@@ -25,9 +25,9 @@ We will run one controlled scheme at a time. Each scheme must report the same fo
 | Scheme | Status | Core Change | Training Delta | Why It Is Tested |
 | --- | --- | --- | --- | --- |
 | A | ready to run | Baseline MVL + local part branch only + cross-modality batch-hard triplet | `--use_m3plus --m3plus_mode part_only --m3plus_aug_strength none --triplet_weight 0.35 --triplet_frame_weight 0.10 --id_label_smoothing 0.05` | Isolate the most common ReID gain source, local part descriptors, without the full M3Plus fusion and extra augmentation noise. |
-| B | queued | Two-stage transfer: baseline checkpoint warm start, then Scheme A/full M3Plus fine-tune | resume best baseline or best Scheme A, lower LR, 30-60 epoch fine-tune | Reduce scratch-training instability and preserve the original strong global representation. |
+| B | queued | Baseline checkpoint warm start with a zero-init local residual branch | resume best baseline, lower LR, 30-60 epoch fine-tune | Preserve the original strong global representation while adding local part cues without changing the baseline embedding shape. |
 | C | queued | Loss-level change: supervised contrastive or Circle-style metric head | keep model close to Scheme A, replace or down-weight current triplet | Test whether stronger metric geometry gives Rank-1 gains without adding more inference cost. |
-| D | queued | Gated local/global fusion | replace plain concatenation with a small gate/projection for global and part features | Prevent the part branch from overwhelming MVL features; likely useful if Scheme A mAP drops or one direction regresses. |
+| D | queued | Stronger gated local/global fusion | replace plain concatenation with a learned gate/projection for global and part features | Prevent the part branch from overwhelming MVL features; likely useful if Scheme B residual gains saturate below target. |
 | E | queued | Full M3Plus with conservative augmentation | `--m3plus_mode full`, mild or no weak-light/occlusion | Revisit multi-scale and attention only after the local branch baseline is understood. |
 
 Scheme decision rule:
@@ -79,7 +79,7 @@ Baseline rerun result rows:
 
 | Dataset | Seed | Best Epoch | i2v R1 | i2v mAP | v2i R1 | v2i mAP | Note |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| HITSZ-VCM | 0 |  |  |  |  |  |  |
+| HITSZ-VCM | 0 | 105 | 73.60 | 61.05 | 76.72 | 63.37 | V100 batch 16 rerun, log `baseline_t10_hitszvcm_v100_20260517_074230.log`; use this as the current Scheme B reference. |
 | BUPTCampus | 0 |  |  |  |  |  |  |
 
 ## Scheme A: Part-Only Local Branch
@@ -130,9 +130,25 @@ Result row to fill after each run:
 | A | HITSZ-VCM | 0 |  |  |  |  |  |  |
 | A | BUPTCampus | 0 |  |  |  |  |  |  |
 
-## Scheme B: Baseline Warm-Start Fine-Tune
+## Scheme B: Baseline Warm-Start Local Residual Fine-Tune
 
-Scheme B starts from the server baseline `model_best.pth`, then adds the part-only local branch with a smaller learning rate and short milestone schedule. The goal is to preserve the baseline global representation while training the new local descriptor and reset heads into a useful range.
+Scheme B starts from the server baseline `model_best.pth`, then adds a local part residual branch with a smaller learning rate and short milestone schedule. The local residual projection is zero-initialized and keeps the embedding dimension unchanged, so the baseline backbone, MVL, BNNeck, and classifiers can load without shape resets. This is the safer next step after Scheme A underperformed from scratch.
+
+Reference checkpoint location on the server:
+
+```bash
+/root/work/M3-ReID/checkpoints/baseline_refs/HITSZVCM_t10_bs16_seed0_epoch105_model_best.pth
+```
+
+Save the current HITSZ-VCM baseline best checkpoint there:
+
+```bash
+cd /root/work/M3-ReID
+mkdir -p checkpoints/baseline_refs
+BEST_CKPT=$(find ckptlog/HITSZVCM -path '*Baseline_t10_hitszvcm_v100_bs16*/modelckpt/model_best.pth' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
+cp "$BEST_CKPT" checkpoints/baseline_refs/HITSZVCM_t10_bs16_seed0_epoch105_model_best.pth
+ls -lh checkpoints/baseline_refs/HITSZVCM_t10_bs16_seed0_epoch105_model_best.pth
+```
 
 Fine-tune scripts:
 
@@ -146,10 +162,10 @@ Default Scheme B deltas:
 ```text
 --resume ${BASELINE_CKPT}
 --use_m3plus
---m3plus_mode part_only
+--m3plus_mode local_residual
 --m3plus_aug_strength none
 --sample_method identity_cross_modality
---triplet_weight 0.15
+--triplet_weight 0.05
 --triplet_frame_weight 0.00
 --id_label_smoothing 0.00
 --lr_milestones 30,50
@@ -160,7 +176,9 @@ Run HITSZ-VCM after its baseline is complete:
 
 ```bash
 cd /root/work/M3-ReID
-BASELINE_CKPT=/root/work/M3-ReID/ckptlog/HITSZVCM/Time-XXXX_Baseline_t10_hitszvcm_v100_bs32/modelckpt/model_best.pth
+git pull
+chmod +x run_scheme_b_t10_hitszvcm_v100.sh
+BASELINE_CKPT=/root/work/M3-ReID/checkpoints/baseline_refs/HITSZVCM_t10_bs16_seed0_epoch105_model_best.pth
 tmux new -d -s m3_hitsz_b "cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM BASELINE_CKPT=${BASELINE_CKPT} ./run_scheme_b_t10_hitszvcm_v100.sh"
 ```
 
@@ -190,7 +208,7 @@ Changed modules:
 | Area | File | Change |
 | --- | --- | --- |
 | Model | `models/modules/enhancement.py` | Added multi-scale residual fusion, lightweight channel-spatial attention, and part-guided local aggregation. |
-| Model | `models/model_m3reid.py` | Added optional M3Plus feature path, `full` / `part_only` mode selection, and concatenated local part descriptor. |
+| Model | `models/model_m3reid.py` | Added optional M3Plus feature path, `full` / `part_only` / `local_residual` mode selection, concatenated local descriptor, and baseline-compatible local residual fine-tune path. |
 | Loss | `losses/metric_loss.py` | Added cross-modality batch-hard triplet loss. |
 | Loss | `losses/mma_loss.py` | Made invalid-batch fallback return a tensor for stable mixed precision training. |
 | Data | `data/transform.py` | Added weak low-light and block occlusion augmentations. |
@@ -202,8 +220,9 @@ Core idea:
 1. Multi-scale residual fusion reuses layer3 detail cues before final MVL pooling.
 2. Lightweight channel-spatial attention suppresses background and modality-specific noise.
 3. Part-guided local aggregation provides horizontal body-part descriptors, a common strong ReID improvement.
-4. Cross-modality batch-hard triplet loss directly optimizes hard visible-infrared positive/negative pairs.
-5. Weak low-light and modest occlusion augmentation improve robustness without making data augmentation the only contribution.
+4. The `local_residual` mode injects local part cues through a zero-initialized residual projection, allowing baseline checkpoints to load almost fully for safer fine-tuning.
+5. Cross-modality batch-hard triplet loss directly optimizes hard visible-infrared positive/negative pairs.
+6. Weak low-light and modest occlusion augmentation improve robustness without making data augmentation the only contribution.
 
 ## Environment
 

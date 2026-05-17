@@ -158,8 +158,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
-    parser.add_argument('--m3plus_mode', default='full', choices=['full', 'part_only'],
-                        help='M3Plus architecture mode. full enables multi-scale, attention, and part branch; part_only keeps only the local part branch')
+    parser.add_argument('--m3plus_mode', default='full', choices=['full', 'part_only', 'local_residual'],
+                        help='M3Plus architecture mode. full enables all enhancers; part_only concatenates a local branch; local_residual adds a baseline-compatible local residual')
     parser.add_argument('--m3plus_aug_strength', default='standard',
                         choices=['standard', 'mild', 'none'],
                         help='Strength of extra M3Plus low-light and block-occlusion augmentation')

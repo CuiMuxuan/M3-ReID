@@ -19,17 +19,17 @@ MVL_NUM_HEADS="${MVL_NUM_HEADS:-2}"
 PART_NUM="${PART_NUM:-4}"
 PART_DIM="${PART_DIM:-2048}"
 FEATURE_DROPOUT="${FEATURE_DROPOUT:-0.0}"
-TRIPLET_WEIGHT="${TRIPLET_WEIGHT:-0.15}"
+TRIPLET_WEIGHT="${TRIPLET_WEIGHT:-0.05}"
 TRIPLET_FRAME_WEIGHT="${TRIPLET_FRAME_WEIGHT:-0.00}"
 ID_LABEL_SMOOTHING="${ID_LABEL_SMOOTHING:-0.00}"
 OPTIMIZER="${OPTIMIZER:-adam}"
 GRAD_CHECKPOINT_HEAD="${GRAD_CHECKPOINT_HEAD:-0}"
 EPOCHS="${EPOCHS:-60}"
-EVAL_START_EPOCH="${EVAL_START_EPOCH:-5}"
+EVAL_START_EPOCH="${EVAL_START_EPOCH:-1}"
 TEST_INTERVAL="${TEST_INTERVAL:-5}"
 EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-8}"
 LR_MILESTONES="${LR_MILESTONES:-30,50}"
-DESC="${DESC:-SchemeB_baseline_warm_partonly_t10_hitszvcm_v100_bs$((P_NUM * K_NUM))}"
+DESC="${DESC:-SchemeB_localres_t10_hitszvcm_v100_bs$((P_NUM * K_NUM))}"
 PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
@@ -62,7 +62,7 @@ python train_m3reid.py \
   --non_blocking \
   --torch_sharing_strategy "${TORCH_SHARING_STRATEGY}" \
   --cudnn_benchmark \
-  --lr 0.00005 --wd 0.0005 \
+  --lr 0.00003 --wd 0.0005 \
   --optimizer "${OPTIMIZER}" \
   --accum_steps "${ACCUM_STEPS}" \
   --lr_milestones "${LR_MILESTONES}" \
@@ -70,7 +70,7 @@ python train_m3reid.py \
   --eval_fp16 \
   --resume "${BASELINE_CKPT}" \
   --use_m3plus \
-  --m3plus_mode part_only \
+  --m3plus_mode local_residual \
   --m3plus_aug_strength none \
   --mvl_num_heads "${MVL_NUM_HEADS}" \
   --part_num "${PART_NUM}" \

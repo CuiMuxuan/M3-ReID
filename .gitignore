@@ -5,3 +5,4 @@ __pycache__/
 
 ckptlog/
 run_logs/
+checkpoints/
