@@ -23,6 +23,7 @@ import sys
 import time
 import argparse
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
 
@@ -47,6 +48,60 @@ def build_loader_kwargs(args):
     return kwargs
 
 
+def collate_all_tracks(batch):
+    track_clips, pids, cids, mids = zip(*batch)
+    return track_clips, pids, cids, mids
+
+
+def extract_embeddings(model, dataset, loader, num_tracks, embedding_dim, args):
+    embeddings = torch.zeros((num_tracks, embedding_dim)).cuda()
+    ptr = 0
+    all_pids, all_cids, all_mids = [], [], []
+
+    if args.eval_sample_mode == 'evenly':
+        for track_data, pids, cids, mids in loader:
+            inputs = track_data.cuda(non_blocking=args.non_blocking)
+            pids = pids.cuda(non_blocking=args.non_blocking)
+            cids = cids.cuda(non_blocking=args.non_blocking)
+            mids = mids.cuda(non_blocking=args.non_blocking)
+            batch_num = inputs.shape[0]
+            with torch.amp.autocast(device_type='cuda', enabled=args.eval_fp16):
+                batch_embeddings = model(inputs)
+            embeddings[ptr:ptr + batch_num, :] = batch_embeddings.detach()
+            ptr += batch_num
+            all_pids.extend(pids)
+            all_cids.extend(cids)
+            all_mids.extend(mids)
+        return embeddings, torch.stack(all_pids, dim=0), torch.stack(all_cids, dim=0), torch.stack(all_mids, dim=0)
+
+    if args.eval_sample_mode != 'all':
+        raise ValueError(f'Unsupported eval_sample_mode: {args.eval_sample_mode}')
+
+    track_index = 0
+    for track_clips_batch, pids, cids, mids in loader:
+        for track_clips, pid, cid, mid in zip(track_clips_batch, pids, cids, mids):
+            if args.max_eval_clips is not None and args.max_eval_clips > 0:
+                track_clips = track_clips[:args.max_eval_clips]
+            clip_tensor = torch.stack(track_clips, dim=0)
+
+            clip_embeddings = []
+            for start in range(0, clip_tensor.size(0), args.batch_size):
+                inputs = clip_tensor[start:start + args.batch_size].cuda(non_blocking=args.non_blocking)
+                with torch.amp.autocast(device_type='cuda', enabled=args.eval_fp16):
+                    clip_embeddings.append(model(inputs).detach())
+            track_embedding = torch.cat(clip_embeddings, dim=0).mean(dim=0, keepdim=True)
+            embeddings[track_index:track_index + 1, :] = F.normalize(track_embedding, p=2, dim=1)
+            track_index += 1
+            all_pids.append(pid)
+            all_cids.append(cid)
+            all_mids.append(mid)
+
+    return (embeddings,
+            torch.tensor(all_pids, device='cuda'),
+            torch.tensor(all_cids, device='cuda'),
+            torch.tensor(all_mids, device='cuda'))
+
+
 if __name__ == '__main__':
 
     # Arguments --------------------------------------------------------------------------------------------------------
@@ -68,6 +123,10 @@ if __name__ == '__main__':
                         help='Dataloader prefetch factor when workers > 0. Set <=0 to disable')
     parser.add_argument('--non_blocking', action=argparse.BooleanOptionalAction, default=True,
                         help='Use non-blocking CUDA transfers when pin_memory is enabled')
+    parser.add_argument('--eval_sample_mode', default='evenly', choices=['evenly', 'all'],
+                        help='Use one evenly sampled clip or aggregate all non-overlapping clips per track')
+    parser.add_argument('--max_eval_clips', default=None, type=int,
+                        help='Optional cap on clips per track when eval_sample_mode=all')
 
     # -- Other Arguments -----------------------------------------------------------------------------------------------
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
@@ -126,7 +185,8 @@ if __name__ == '__main__':
     test_batch_size = args.batch_size  # Set Appropriate Values Based on GPU Memory
     loader_kwargs = build_loader_kwargs(args)
     print(f'Dataloader setting: {loader_kwargs}, non_blocking_cuda={args.non_blocking}, '
-          f'eval_fp16={args.eval_fp16}')
+          f'eval_fp16={args.eval_fp16}, eval_sample_mode={args.eval_sample_mode}, '
+          f'max_eval_clips={args.max_eval_clips}')
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
     if args.dataset == 'HITSZVCM':
@@ -152,13 +212,21 @@ if __name__ == '__main__':
     ]))
 
     query_dataset = VideoVIDataset(data_manager, transform=transform_test,
-                                   sample_seq_num=sample_seq_num, sample_mode='evenly', dataset_mode='query')
+                                   sample_seq_num=sample_seq_num, sample_mode=args.eval_sample_mode,
+                                   dataset_mode='query')
     gallery_dataset = VideoVIDataset(data_manager, transform=transform_test,
-                                     sample_seq_num=sample_seq_num, sample_mode='evenly', dataset_mode='gallery')
-    query_loader = DataLoader(query_dataset, batch_size=test_batch_size,
-                              shuffle=False, **loader_kwargs)
-    gallery_loader = DataLoader(gallery_dataset, batch_size=test_batch_size,
-                                shuffle=False, **loader_kwargs)
+                                     sample_seq_num=sample_seq_num, sample_mode=args.eval_sample_mode,
+                                     dataset_mode='gallery')
+    if args.eval_sample_mode == 'evenly':
+        query_loader = DataLoader(query_dataset, batch_size=test_batch_size,
+                                  shuffle=False, **loader_kwargs)
+        gallery_loader = DataLoader(gallery_dataset, batch_size=test_batch_size,
+                                    shuffle=False, **loader_kwargs)
+    else:
+        query_loader = DataLoader(query_dataset, batch_size=1, shuffle=False,
+                                  collate_fn=collate_all_tracks, **loader_kwargs)
+        gallery_loader = DataLoader(gallery_dataset, batch_size=1, shuffle=False,
+                                    collate_fn=collate_all_tracks, **loader_kwargs)
 
     # Model ------------------------------------------------------------------------------------------------------------
     model = M3ReID(sample_seq_num, num_train_class,
@@ -183,47 +251,13 @@ if __name__ == '__main__':
     s_time = time.time()
 
     eval_embedding_dim = getattr(model, 'output_dim', model.embedding_dim)
-    query_embeddings = torch.zeros((num_query, eval_embedding_dim)).cuda()
-    gallery_embeddings = torch.zeros((num_gallery, eval_embedding_dim)).cuda()
-    query_ptr, gallery_ptr = 0, 0
-    q_pids, q_cids, q_mids = [], [], []
-    g_pids, g_cids, g_mids = [], [], []
-
     with torch.no_grad():
-
-        for track_data, pids, cids, mids in query_loader:
-            inputs = track_data.cuda(non_blocking=args.non_blocking)
-            pids = pids.cuda(non_blocking=args.non_blocking)
-            cids = cids.cuda(non_blocking=args.non_blocking)
-            mids = mids.cuda(non_blocking=args.non_blocking)
-            batch_num = inputs.shape[0]
-            with torch.amp.autocast(device_type='cuda', enabled=args.eval_fp16):
-                embeddings = model(inputs)
-            query_embeddings[query_ptr:query_ptr + batch_num, :] = embeddings.detach()
-            query_ptr = query_ptr + batch_num
-            q_pids.extend(pids)
-            q_cids.extend(cids)
-            q_mids.extend(mids)
-        q_pids = torch.stack(q_pids, dim=0)
-        q_cids = torch.stack(q_cids, dim=0)
-        q_mids = torch.stack(q_mids, dim=0)
-
-        for track_data, pids, cids, mids in gallery_loader:
-            inputs = track_data.cuda(non_blocking=args.non_blocking)
-            pids = pids.cuda(non_blocking=args.non_blocking)
-            cids = cids.cuda(non_blocking=args.non_blocking)
-            mids = mids.cuda(non_blocking=args.non_blocking)
-            batch_num = inputs.shape[0]
-            with torch.amp.autocast(device_type='cuda', enabled=args.eval_fp16):
-                embeddings = model(inputs)
-            gallery_embeddings[gallery_ptr:gallery_ptr + batch_num, :] = embeddings.detach()
-            gallery_ptr = gallery_ptr + batch_num
-            g_pids.extend(pids)
-            g_cids.extend(cids)
-            g_mids.extend(mids)
-        g_pids = torch.stack(g_pids, dim=0)
-        g_cids = torch.stack(g_cids, dim=0)
-        g_mids = torch.stack(g_mids, dim=0)
+        query_embeddings, q_pids, q_cids, q_mids = extract_embeddings(
+            model, query_dataset, query_loader, num_query, eval_embedding_dim, args
+        )
+        gallery_embeddings, g_pids, g_cids, g_mids = extract_embeddings(
+            model, gallery_dataset, gallery_loader, num_gallery, eval_embedding_dim, args
+        )
 
     e_time_1 = time.time()
 
