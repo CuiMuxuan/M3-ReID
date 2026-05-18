@@ -46,6 +46,7 @@ from data.transform import RandomBlockOcclusion
 from models.model_m3reid import M3ReID
 from losses.mma_loss import MultiModalityAlignmentLoss
 from losses.metric_loss import CrossModalityBatchHardTripletLoss
+from losses.prototype_loss import PrototypeMemoryLoss
 from losses.sep_loss import SeparationLoss
 from tools.eval_metrics import get_cmc_mAP_mINP
 from tools.utils import set_seed, time_str, Logger
@@ -211,6 +212,16 @@ if __name__ == '__main__':
                         help='Weight of dual_fusion local branch cross-modality triplet loss')
     parser.add_argument('--part_mma_weight', default=0.0, type=float,
                         help='Weight of dual_fusion local branch modality alignment loss')
+    parser.add_argument('--proto_weight', default=0.0, type=float,
+                        help='Weight of global EMA class-prototype loss')
+    parser.add_argument('--part_proto_weight', default=0.0, type=float,
+                        help='Weight of dual_fusion local branch EMA class-prototype loss')
+    parser.add_argument('--proto_temperature', default=0.07, type=float,
+                        help='Temperature for EMA class-prototype logits')
+    parser.add_argument('--proto_momentum', default=0.2, type=float,
+                        help='EMA momentum for updating class prototypes')
+    parser.add_argument('--proto_start_epoch', default=1, type=int,
+                        help='First 1-based epoch to enable prototype loss')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -393,6 +404,20 @@ if __name__ == '__main__':
     criterion_ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing).cuda()
     criterion_mma_loss = MultiModalityAlignmentLoss().cuda()
     criterion_triplet_loss = CrossModalityBatchHardTripletLoss(margin=args.triplet_margin).cuda()
+    criterion_proto_loss = None
+    criterion_part_proto_loss = None
+    if args.use_m3plus and args.proto_weight > 0:
+        criterion_proto_loss = PrototypeMemoryLoss(
+            num_train_class, model.embedding_dim,
+            temperature=args.proto_temperature,
+            momentum=args.proto_momentum,
+        ).cuda()
+    if args.use_m3plus and args.m3plus_mode == 'dual_fusion' and args.part_proto_weight > 0:
+        criterion_part_proto_loss = PrototypeMemoryLoss(
+            num_train_class, args.part_dim,
+            temperature=args.proto_temperature,
+            momentum=args.proto_momentum,
+        ).cuda()
     criterion_ofr_loss = SeparationLoss().cuda()
     criterion_dac_loss = SeparationLoss().cuda()
 
@@ -418,6 +443,9 @@ if __name__ == '__main__':
           f'part_lr_mult={args.part_lr_mult}, freeze_base_epochs={args.freeze_base_epochs}, '
           f'part_id_weight={args.part_id_weight}, part_triplet_weight={args.part_triplet_weight}, '
           f'part_mma_weight={args.part_mma_weight}, '
+          f'proto_weight={args.proto_weight}, part_proto_weight={args.part_proto_weight}, '
+          f'proto_temperature={args.proto_temperature}, proto_momentum={args.proto_momentum}, '
+          f'proto_start_epoch={args.proto_start_epoch}, '
           f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
           f'lr_milestones={lr_milestones}')
 
@@ -501,6 +529,11 @@ if __name__ == '__main__':
                 loss_part_id = x_embed_m.new_zeros(())
                 loss_part_mma = x_embed_m.new_zeros(())
                 loss_part_triplet = x_embed_m.new_zeros(())
+                loss_proto = x_embed_m.new_zeros(())
+                loss_part_proto = x_embed_m.new_zeros(())
+                proto_enabled = epoch + 1 >= args.proto_start_epoch
+                if proto_enabled and criterion_proto_loss is not None:
+                    loss_proto = criterion_proto_loss(x_embed_m, labels)
                 if part_aux is not None:
                     part_embed = part_aux['part_embed']
                     part_embed_m = part_aux['part_embed_mean']
@@ -524,6 +557,8 @@ if __name__ == '__main__':
                         m_labels.repeat_interleave(part_t),
                     )
                     loss_part_triplet = loss_part_triplet + args.triplet_frame_weight * loss_part_triplet_frames
+                    if proto_enabled and criterion_part_proto_loss is not None:
+                        loss_part_proto = criterion_part_proto_loss(part_embed_m, labels)
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -538,6 +573,8 @@ if __name__ == '__main__':
             loss = loss + args.part_id_weight * loss_part_id
             loss = loss + args.part_mma_weight * loss_part_mma
             loss = loss + args.part_triplet_weight * loss_part_triplet
+            loss = loss + args.proto_weight * loss_proto
+            loss = loss + args.part_proto_weight * loss_part_proto
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -571,6 +608,8 @@ if __name__ == '__main__':
                       f'loss_triplet: {loss_triplet.data:.4f} '
                       f'loss_part_id: {loss_part_id.data:.4f} '
                       f'loss_part_triplet: {loss_part_triplet.data:.4f} '
+                      f'loss_proto: {loss_proto.data:.4f} '
+                      f'loss_part_proto: {loss_part_proto.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -582,6 +621,8 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_part_id', loss_part_id.data, iter_num)
                 writer.add_scalar('metric/loss_part_mma', loss_part_mma.data, iter_num)
                 writer.add_scalar('metric/loss_part_triplet', loss_part_triplet.data, iter_num)
+                writer.add_scalar('metric/loss_proto', loss_proto.data, iter_num)
+                writer.add_scalar('metric/loss_part_proto', loss_part_proto.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
