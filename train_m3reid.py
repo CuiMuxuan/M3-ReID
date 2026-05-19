@@ -45,6 +45,7 @@ from data.transform import WeakLowLight
 from data.transform import RandomBlockOcclusion
 from models.model_m3reid import M3ReID
 from losses.mma_loss import MultiModalityAlignmentLoss
+from losses.metric_loss import CosFaceProxyLoss
 from losses.metric_loss import CrossModalityBatchHardTripletLoss
 from losses.prototype_loss import CrossModalityPrototypeTripletLoss
 from losses.prototype_loss import PrototypeMemoryLoss
@@ -224,6 +225,18 @@ if __name__ == '__main__':
                         help='Weight of dual_fusion local branch cross-modality triplet loss')
     parser.add_argument('--part_mma_weight', default=0.0, type=float,
                         help='Weight of dual_fusion local branch modality alignment loss')
+    parser.add_argument('--cosface_weight', default=0.0, type=float,
+                        help='Weight of global video-level CosFace proxy loss')
+    parser.add_argument('--cosface_frame_weight', default=0.0, type=float,
+                        help='Relative frame-level CosFace proxy loss weight')
+    parser.add_argument('--part_cosface_weight', default=0.0, type=float,
+                        help='Weight of local branch video-level CosFace proxy loss')
+    parser.add_argument('--cosface_margin', default=0.2, type=float,
+                        help='Cosine margin for CosFace proxy loss')
+    parser.add_argument('--cosface_scale', default=32.0, type=float,
+                        help='Logit scale for CosFace proxy loss')
+    parser.add_argument('--cosface_start_epoch', default=1, type=int,
+                        help='First 1-based epoch to enable CosFace proxy loss')
     parser.add_argument('--proto_weight', default=0.0, type=float,
                         help='Weight of global EMA class-prototype loss')
     parser.add_argument('--part_proto_weight', default=0.0, type=float,
@@ -425,6 +438,12 @@ if __name__ == '__main__':
     criterion_ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing).cuda()
     criterion_mma_loss = MultiModalityAlignmentLoss().cuda()
     criterion_triplet_loss = CrossModalityBatchHardTripletLoss(margin=args.triplet_margin).cuda()
+    criterion_cosface_loss = None
+    if args.use_m3plus and (args.cosface_weight > 0 or args.part_cosface_weight > 0):
+        criterion_cosface_loss = CosFaceProxyLoss(
+            scale=args.cosface_scale,
+            margin=args.cosface_margin,
+        ).cuda()
     criterion_proto_loss = None
     criterion_part_proto_loss = None
     criterion_cross_proto_loss = None
@@ -480,6 +499,10 @@ if __name__ == '__main__':
           f'temporal_lr_mult={args.temporal_lr_mult}, '
           f'part_id_weight={args.part_id_weight}, part_triplet_weight={args.part_triplet_weight}, '
           f'part_mma_weight={args.part_mma_weight}, '
+          f'cosface_weight={args.cosface_weight}, cosface_frame_weight={args.cosface_frame_weight}, '
+          f'part_cosface_weight={args.part_cosface_weight}, '
+          f'cosface_margin={args.cosface_margin}, cosface_scale={args.cosface_scale}, '
+          f'cosface_start_epoch={args.cosface_start_epoch}, '
           f'proto_weight={args.proto_weight}, part_proto_weight={args.part_proto_weight}, '
           f'proto_temperature={args.proto_temperature}, proto_momentum={args.proto_momentum}, '
           f'proto_start_epoch={args.proto_start_epoch}, '
@@ -570,12 +593,22 @@ if __name__ == '__main__':
                 loss_part_id = x_embed_m.new_zeros(())
                 loss_part_mma = x_embed_m.new_zeros(())
                 loss_part_triplet = x_embed_m.new_zeros(())
+                loss_cosface = x_embed_m.new_zeros(())
+                loss_part_cosface = x_embed_m.new_zeros(())
                 loss_proto = x_embed_m.new_zeros(())
                 loss_part_proto = x_embed_m.new_zeros(())
                 loss_cross_proto = x_embed_m.new_zeros(())
                 loss_part_cross_proto = x_embed_m.new_zeros(())
                 proto_enabled = epoch + 1 >= args.proto_start_epoch
                 cross_proto_enabled = epoch + 1 >= args.cross_proto_start_epoch
+                cosface_enabled = epoch + 1 >= args.cosface_start_epoch
+                if cosface_enabled and criterion_cosface_loss is not None and args.cosface_weight > 0:
+                    loss_cosface = criterion_cosface_loss(x_embed_m, model.classifier.weight, labels)
+                    if args.cosface_frame_weight > 0:
+                        loss_cosface_frames = criterion_cosface_loss(
+                            x_embed.reshape(b * t, c), model.classifier_frame.weight, id_labels_all
+                        )
+                        loss_cosface = loss_cosface + args.cosface_frame_weight * loss_cosface_frames
                 if proto_enabled and criterion_proto_loss is not None:
                     loss_proto = criterion_proto_loss(x_embed_m, labels)
                 if cross_proto_enabled and criterion_cross_proto_loss is not None:
@@ -607,6 +640,10 @@ if __name__ == '__main__':
                         loss_part_proto = criterion_part_proto_loss(part_embed_m, labels)
                     if cross_proto_enabled and criterion_part_cross_proto_loss is not None:
                         loss_part_cross_proto = criterion_part_cross_proto_loss(part_embed_m, labels, m_labels)
+                    if cosface_enabled and criterion_cosface_loss is not None and args.part_cosface_weight > 0:
+                        loss_part_cosface = criterion_cosface_loss(
+                            part_embed_m, model.part_classifier.weight, labels
+                        )
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -621,6 +658,8 @@ if __name__ == '__main__':
             loss = loss + args.part_id_weight * loss_part_id
             loss = loss + args.part_mma_weight * loss_part_mma
             loss = loss + args.part_triplet_weight * loss_part_triplet
+            loss = loss + args.cosface_weight * loss_cosface
+            loss = loss + args.part_cosface_weight * loss_part_cosface
             loss = loss + args.proto_weight * loss_proto
             loss = loss + args.part_proto_weight * loss_part_proto
             loss = loss + args.cross_proto_weight * loss_cross_proto
@@ -658,6 +697,8 @@ if __name__ == '__main__':
                       f'loss_triplet: {loss_triplet.data:.4f} '
                       f'loss_part_id: {loss_part_id.data:.4f} '
                       f'loss_part_triplet: {loss_part_triplet.data:.4f} '
+                      f'loss_cosface: {loss_cosface.data:.4f} '
+                      f'loss_part_cosface: {loss_part_cosface.data:.4f} '
                       f'loss_proto: {loss_proto.data:.4f} '
                       f'loss_part_proto: {loss_part_proto.data:.4f} '
                       f'loss_cross_proto: {loss_cross_proto.data:.4f} '
@@ -673,6 +714,8 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_part_id', loss_part_id.data, iter_num)
                 writer.add_scalar('metric/loss_part_mma', loss_part_mma.data, iter_num)
                 writer.add_scalar('metric/loss_part_triplet', loss_part_triplet.data, iter_num)
+                writer.add_scalar('metric/loss_cosface', loss_cosface.data, iter_num)
+                writer.add_scalar('metric/loss_part_cosface', loss_part_cosface.data, iter_num)
                 writer.add_scalar('metric/loss_proto', loss_proto.data, iter_num)
                 writer.add_scalar('metric/loss_part_proto', loss_part_proto.data, iter_num)
                 writer.add_scalar('metric/loss_cross_proto', loss_cross_proto.data, iter_num)

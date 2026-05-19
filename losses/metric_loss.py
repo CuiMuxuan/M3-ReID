@@ -44,3 +44,41 @@ class CrossModalityBatchHardTripletLoss(nn.Module):
 
         target = torch.ones_like(hard_pos)
         return self.ranking_loss(hard_neg, hard_pos, target)
+
+
+class CosFaceProxyLoss(nn.Module):
+    """
+    CosFace-style proxy classification loss using the model classifier weights.
+
+    Unlike mini-batch triplet losses, this compares each embedding against all
+    training identities through the classifier weight matrix, which gives a
+    stronger all-class separation signal for Rank-1 retrieval fine-tuning.
+    """
+
+    def __init__(self, scale=32.0, margin=0.2):
+        super().__init__()
+        if scale <= 0:
+            raise ValueError('scale must be positive.')
+        if margin < 0:
+            raise ValueError('margin must be non-negative.')
+        self.scale = scale
+        self.margin = margin
+
+    def forward(self, embeddings, classifier_weight, labels):
+        if embeddings.size(0) == 0:
+            return embeddings.new_zeros(())
+
+        features = F.normalize(embeddings.float(), p=2, dim=1)
+        proxies = F.normalize(classifier_weight.float(), p=2, dim=1)
+        logits = torch.matmul(features, proxies.t())
+
+        labels = labels.long()
+        valid = (labels >= 0) & (labels < logits.size(1))
+        if not valid.any():
+            return embeddings.new_zeros(())
+
+        logits = logits[valid]
+        labels = labels[valid]
+        target_logits = logits.gather(1, labels.view(-1, 1))
+        logits = logits.scatter(1, labels.view(-1, 1), target_logits - self.margin)
+        return F.cross_entropy(logits * self.scale, labels).to(embeddings.dtype)
