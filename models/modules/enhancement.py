@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -151,3 +153,42 @@ class TemporalEmbeddingRefinement(nn.Module):
         y = y * self.gate(y)
         y = self.dropout(y)
         return residual + self.scale * self.up(y)
+
+
+class AdaptiveFusionGate(nn.Module):
+    """
+    Predict a per-track local-feature weight for dual-fusion inference.
+
+    The final layer is initialized to produce init_alpha for every sample, so a
+    warm-started fixed-alpha checkpoint begins close to its known retrieval
+    behavior and can learn sample-specific deviations during fine-tuning.
+    """
+
+    def __init__(self, global_dim, part_dim, hidden_dim=256, init_alpha=0.01,
+                 min_alpha=0.0, max_alpha=0.12):
+        super().__init__()
+        if not 0.0 <= min_alpha < max_alpha <= 1.0:
+            raise ValueError('Adaptive gate requires 0 <= min_alpha < max_alpha <= 1.')
+
+        min_alpha_float = float(min_alpha)
+        max_alpha_float = float(max_alpha)
+        self.register_buffer('min_alpha', torch.tensor(min_alpha_float))
+        self.register_buffer('max_alpha', torch.tensor(max_alpha_float))
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.net = nn.Sequential(
+            nn.Linear(global_dim + part_dim, hidden_dim, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 1, bias=True),
+        )
+
+        relative_alpha = (float(init_alpha) - min_alpha_float) / (max_alpha_float - min_alpha_float)
+        relative_alpha = min(max(relative_alpha, 1e-4), 1.0 - 1e-4)
+        init_bias = math.log(relative_alpha / (1.0 - relative_alpha))
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.constant_(self.net[-1].bias, init_bias)
+
+    def forward(self, global_embed, part_embed):
+        gate_input = torch.cat([self.global_norm(global_embed), self.part_norm(part_embed)], dim=1)
+        gate = torch.sigmoid(self.net(gate_input))
+        return self.min_alpha + (self.max_alpha - self.min_alpha) * gate

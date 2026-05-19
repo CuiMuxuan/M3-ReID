@@ -109,7 +109,10 @@ def build_optimizer(args, params):
 
 
 def build_train_params(args, model):
-    part_prefixes = ('part_aggregation', 'part_bn_neck', 'part_classifier')
+    part_prefixes = (
+        'part_aggregation', 'part_bn_neck', 'part_classifier',
+        'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
+    )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
     for name, param in model.named_parameters():
@@ -184,7 +187,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
     parser.add_argument('--m3plus_mode', default='full',
-                        choices=['full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'],
+                        choices=['full', 'part_only', 'local_residual', 'dual_fusion',
+                                 'temporal_dual_fusion', 'adaptive_dual_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='standard',
                         choices=['standard', 'mild', 'none'],
@@ -197,7 +201,11 @@ if __name__ == '__main__':
     parser.add_argument('--feature_dropout', default=0.0, type=float,
                         help='Dropout applied before ID classifiers during training')
     parser.add_argument('--fusion_alpha', default=0.2, type=float,
-                        help='Local feature weight used by dual_fusion inference')
+                        help='Local feature weight used by dual_fusion inference, or initial local weight for adaptive_dual_fusion')
+    parser.add_argument('--adaptive_gate_min', default=0.0, type=float,
+                        help='Minimum local feature weight predicted by adaptive_dual_fusion')
+    parser.add_argument('--adaptive_gate_max', default=0.12, type=float,
+                        help='Maximum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--part_lr_mult', default=1.0, type=float,
                         help='Learning-rate multiplier for dual_fusion local branch parameters')
     parser.add_argument('--temporal_dim', default=256, type=int,
@@ -225,6 +233,10 @@ if __name__ == '__main__':
                         help='Weight of dual_fusion local branch cross-modality triplet loss')
     parser.add_argument('--part_mma_weight', default=0.0, type=float,
                         help='Weight of dual_fusion local branch modality alignment loss')
+    parser.add_argument('--fusion_id_weight', default=0.0, type=float,
+                        help='Weight of adaptive_dual_fusion fused video-level ID loss')
+    parser.add_argument('--fusion_triplet_weight', default=0.0, type=float,
+                        help='Weight of adaptive_dual_fusion fused video-level cross-modality triplet loss')
     parser.add_argument('--cosface_weight', default=0.0, type=float,
                         help='Weight of global video-level CosFace proxy loss')
     parser.add_argument('--cosface_frame_weight', default=0.0, type=float,
@@ -406,7 +418,9 @@ if __name__ == '__main__':
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
                    grad_checkpoint_head=args.grad_checkpoint_head,
-                   temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout).cuda()
+                   temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout,
+                   adaptive_gate_min=args.adaptive_gate_min,
+                   adaptive_gate_max=args.adaptive_gate_max).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
@@ -460,13 +474,13 @@ if __name__ == '__main__':
             margin=args.cross_proto_margin,
             momentum=args.proto_momentum,
         ).cuda()
-    if args.use_m3plus and args.m3plus_mode == 'dual_fusion' and args.part_cross_proto_weight > 0:
+    if args.use_m3plus and args.m3plus_mode in ('dual_fusion', 'adaptive_dual_fusion') and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
             num_train_class, args.part_dim,
             margin=args.cross_proto_margin,
             momentum=args.proto_momentum,
         ).cuda()
-    if args.use_m3plus and args.m3plus_mode == 'dual_fusion' and args.part_proto_weight > 0:
+    if args.use_m3plus and args.m3plus_mode in ('dual_fusion', 'adaptive_dual_fusion') and args.part_proto_weight > 0:
         criterion_part_proto_loss = PrototypeMemoryLoss(
             num_train_class, args.part_dim,
             temperature=args.proto_temperature,
@@ -494,11 +508,13 @@ if __name__ == '__main__':
           f'fp16={args.fp16}, eval_fp16={args.eval_fp16}, '
           f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
           f'feature_dropout={args.feature_dropout}, fusion_alpha={args.fusion_alpha}, '
+          f'adaptive_gate_min={args.adaptive_gate_min}, adaptive_gate_max={args.adaptive_gate_max}, '
           f'part_lr_mult={args.part_lr_mult}, freeze_base_epochs={args.freeze_base_epochs}, '
           f'temporal_dim={args.temporal_dim}, temporal_dropout={args.temporal_dropout}, '
           f'temporal_lr_mult={args.temporal_lr_mult}, '
           f'part_id_weight={args.part_id_weight}, part_triplet_weight={args.part_triplet_weight}, '
           f'part_mma_weight={args.part_mma_weight}, '
+          f'fusion_id_weight={args.fusion_id_weight}, fusion_triplet_weight={args.fusion_triplet_weight}, '
           f'cosface_weight={args.cosface_weight}, cosface_frame_weight={args.cosface_frame_weight}, '
           f'part_cosface_weight={args.part_cosface_weight}, '
           f'cosface_margin={args.cosface_margin}, cosface_scale={args.cosface_scale}, '
@@ -544,7 +560,7 @@ if __name__ == '__main__':
 
         # -- Train -----------------------------------------------------------------------------------------------------
         model.train()
-        if args.m3plus_mode in ('dual_fusion', 'temporal_dual_fusion'):
+        if args.m3plus_mode in ('dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion'):
             base_trainable = epoch >= args.freeze_base_epochs
             model.set_scheme_d_base_trainable(base_trainable)
             if epoch == 0 and not base_trainable:
@@ -595,6 +611,9 @@ if __name__ == '__main__':
                 loss_part_triplet = x_embed_m.new_zeros(())
                 loss_cosface = x_embed_m.new_zeros(())
                 loss_part_cosface = x_embed_m.new_zeros(())
+                loss_fusion_id = x_embed_m.new_zeros(())
+                loss_fusion_triplet = x_embed_m.new_zeros(())
+                fusion_gate_mean = x_embed_m.new_zeros(())
                 loss_proto = x_embed_m.new_zeros(())
                 loss_part_proto = x_embed_m.new_zeros(())
                 loss_cross_proto = x_embed_m.new_zeros(())
@@ -644,6 +663,12 @@ if __name__ == '__main__':
                         loss_part_cosface = criterion_cosface_loss(
                             part_embed_m, model.part_classifier.weight, labels
                         )
+                    if 'fusion_embed_mean' in part_aux:
+                        fusion_embed_m = part_aux['fusion_embed_mean']
+                        fusion_logits_m = part_aux['fusion_logits_mean']
+                        loss_fusion_id = criterion_ce_loss(fusion_logits_m, labels)
+                        loss_fusion_triplet = criterion_triplet_loss(fusion_embed_m, id_labels, m_labels)
+                        fusion_gate_mean = part_aux['fusion_gate'].detach().mean()
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -658,6 +683,8 @@ if __name__ == '__main__':
             loss = loss + args.part_id_weight * loss_part_id
             loss = loss + args.part_mma_weight * loss_part_mma
             loss = loss + args.part_triplet_weight * loss_part_triplet
+            loss = loss + args.fusion_id_weight * loss_fusion_id
+            loss = loss + args.fusion_triplet_weight * loss_fusion_triplet
             loss = loss + args.cosface_weight * loss_cosface
             loss = loss + args.part_cosface_weight * loss_part_cosface
             loss = loss + args.proto_weight * loss_proto
@@ -697,6 +724,9 @@ if __name__ == '__main__':
                       f'loss_triplet: {loss_triplet.data:.4f} '
                       f'loss_part_id: {loss_part_id.data:.4f} '
                       f'loss_part_triplet: {loss_part_triplet.data:.4f} '
+                      f'loss_fusion_id: {loss_fusion_id.data:.4f} '
+                      f'loss_fusion_triplet: {loss_fusion_triplet.data:.4f} '
+                      f'fusion_gate: {fusion_gate_mean.data:.4f} '
                       f'loss_cosface: {loss_cosface.data:.4f} '
                       f'loss_part_cosface: {loss_part_cosface.data:.4f} '
                       f'loss_proto: {loss_proto.data:.4f} '
@@ -714,6 +744,9 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_part_id', loss_part_id.data, iter_num)
                 writer.add_scalar('metric/loss_part_mma', loss_part_mma.data, iter_num)
                 writer.add_scalar('metric/loss_part_triplet', loss_part_triplet.data, iter_num)
+                writer.add_scalar('metric/loss_fusion_id', loss_fusion_id.data, iter_num)
+                writer.add_scalar('metric/loss_fusion_triplet', loss_fusion_triplet.data, iter_num)
+                writer.add_scalar('metric/fusion_gate_mean', fusion_gate_mean.data, iter_num)
                 writer.add_scalar('metric/loss_cosface', loss_cosface.data, iter_num)
                 writer.add_scalar('metric/loss_part_cosface', loss_part_cosface.data, iter_num)
                 writer.add_scalar('metric/loss_proto', loss_proto.data, iter_num)

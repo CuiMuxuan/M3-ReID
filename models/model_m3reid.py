@@ -25,6 +25,7 @@ from models.modules.mvl_attention import MultiViewLearningAttention
 from models.modules.normalize import Normalize
 from models.modules.enhancement import LightweightChannelSpatialAttention
 from models.modules.enhancement import MultiScaleResidualFusion
+from models.modules.enhancement import AdaptiveFusionGate
 from models.modules.enhancement import PartGuidedAggregation
 from models.modules.enhancement import TemporalEmbeddingRefinement
 
@@ -41,7 +42,8 @@ class M3ReID(nn.Module):
 
     def __init__(self, sample_seq_num, class_num, use_enhancements=False, m3plus_mode='full', part_num=4,
                  mvl_num_heads=2, part_dim=2048, feature_dropout=0.0, fusion_alpha=0.2,
-                 grad_checkpoint_head=False, temporal_dim=256, temporal_dropout=0.0):
+                 grad_checkpoint_head=False, temporal_dim=256, temporal_dropout=0.0,
+                 adaptive_gate_min=0.0, adaptive_gate_max=0.12):
         """
         Initialize the M3-ReID model.
 
@@ -64,16 +66,23 @@ class M3ReID(nn.Module):
         self.sample_seq_num = sample_seq_num
         self.class_num = class_num
         self.use_enhancements = use_enhancements
-        if m3plus_mode not in ('full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'):
+        if m3plus_mode not in (
+            'full', 'part_only', 'local_residual', 'dual_fusion',
+            'temporal_dual_fusion', 'adaptive_dual_fusion'
+        ):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
         self.use_feature_enhancers = use_enhancements and m3plus_mode == 'full'
         self.use_part_branch = use_enhancements and m3plus_mode in (
-            'full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'
+            'full', 'part_only', 'local_residual', 'dual_fusion',
+            'temporal_dual_fusion', 'adaptive_dual_fusion'
         )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
-        self.use_dual_fusion = use_enhancements and m3plus_mode in ('dual_fusion', 'temporal_dual_fusion')
+        self.use_dual_fusion = use_enhancements and m3plus_mode in (
+            'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion'
+        )
         self.use_temporal_refine = use_enhancements and m3plus_mode == 'temporal_dual_fusion'
+        self.use_adaptive_dual_fusion = use_enhancements and m3plus_mode == 'adaptive_dual_fusion'
         self.fusion_alpha = float(fusion_alpha)
         self.grad_checkpoint_head = grad_checkpoint_head
 
@@ -116,6 +125,15 @@ class M3ReID(nn.Module):
                 self.part_bn_neck.bias.requires_grad_(False)
                 self.part_classifier_frame = nn.Linear(part_dim, class_num, bias=False)
                 self.part_classifier = nn.Linear(part_dim, class_num, bias=False)
+                if self.use_adaptive_dual_fusion:
+                    self.adaptive_fusion_gate = AdaptiveFusionGate(
+                        self.embedding_dim, part_dim, init_alpha=fusion_alpha,
+                        min_alpha=adaptive_gate_min, max_alpha=adaptive_gate_max
+                    )
+                    self.fusion_bn_neck = nn.BatchNorm1d(self.embedding_dim + part_dim)
+                    nn.init.constant_(self.fusion_bn_neck.bias, 0)
+                    self.fusion_bn_neck.bias.requires_grad_(False)
+                    self.fusion_classifier = nn.Linear(self.embedding_dim + part_dim, class_num, bias=False)
             else:
                 self.embedding_dim += part_dim
 
@@ -142,10 +160,19 @@ class M3ReID(nn.Module):
     def _mvl_forward(self, global_feat):
         return self.mvl_attention(global_feat)
 
+    def _adaptive_fusion(self, global_embed, part_embed):
+        alpha = self.adaptive_fusion_gate(global_embed, part_embed)
+        global_eval = self.l2_norm(global_embed) * torch.sqrt(1.0 - alpha)
+        part_eval = self.l2_norm(part_embed) * torch.sqrt(alpha)
+        return torch.cat([global_eval, part_eval], dim=1), alpha
+
     def set_scheme_d_base_trainable(self, trainable):
         if not self.use_dual_fusion:
             return
-        part_prefixes = ('part_aggregation', 'part_bn_neck', 'part_classifier', 'temporal_refine')
+        part_prefixes = (
+            'part_aggregation', 'part_bn_neck', 'part_classifier', 'temporal_refine',
+            'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
+        )
         for name, param in self.named_parameters():
             param.requires_grad_(trainable or name.startswith(part_prefixes))
 
@@ -281,16 +308,26 @@ class M3ReID(nn.Module):
                     self.feature_dropout(part_embed.reshape(part_b * part_t, part_c))
                 ).reshape(part_b, part_t, -1)
                 part_logits_mean = self.part_classifier(self.feature_dropout(part_embed_mean))
-                return (x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks,
-                        {
-                            'part_embed': part_embed,
-                            'part_embed_mean': part_embed_mean,
-                            'part_logits': part_logits,
-                            'part_logits_mean': part_logits_mean,
-                        })
+                aux = {
+                    'part_embed': part_embed,
+                    'part_embed_mean': part_embed_mean,
+                    'part_logits': part_logits,
+                    'part_logits_mean': part_logits_mean,
+                }
+                if self.use_adaptive_dual_fusion:
+                    fusion_embed_mean, fusion_gate = self._adaptive_fusion(x_embed_mean, part_embed_mean)
+                    fusion_bn = self.fusion_bn_neck(fusion_embed_mean)
+                    aux.update({
+                        'fusion_embed_mean': fusion_embed_mean,
+                        'fusion_logits_mean': self.fusion_classifier(self.feature_dropout(fusion_bn)),
+                        'fusion_gate': fusion_gate,
+                    })
+                return (x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks, aux)
             return x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks
         else:
             if self.use_dual_fusion:
+                if self.use_adaptive_dual_fusion:
+                    return self._adaptive_fusion(x_embed_mean, part_aux[1])[0]
                 alpha = min(max(self.fusion_alpha, 0.0), 1.0)
                 global_eval = self.l2_norm(x_embed_mean) * ((1.0 - alpha) ** 0.5)
                 part_eval = self.l2_norm(part_aux[1]) * (alpha ** 0.5)

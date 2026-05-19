@@ -23,6 +23,8 @@ M3PLUS_MODE="${M3PLUS_MODE:-dual_fusion}"
 TEMPORAL_DIM="${TEMPORAL_DIM:-256}"
 TEMPORAL_DROPOUT="${TEMPORAL_DROPOUT:-0.0}"
 FUSION_ALPHA="${FUSION_ALPHA:-0.05}"
+ADAPTIVE_GATE_MIN="${ADAPTIVE_GATE_MIN:-0.0}"
+ADAPTIVE_GATE_MAX="${ADAPTIVE_GATE_MAX:-0.10}"
 MAX_EVAL_CLIPS="${MAX_EVAL_CLIPS:-0}"
 EVAL_FP16="${EVAL_FP16:-1}"
 PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
@@ -66,6 +68,8 @@ python test_m3reid.py \
   --temporal_dim "${TEMPORAL_DIM}" \
   --temporal_dropout "${TEMPORAL_DROPOUT}" \
   --fusion_alpha "${FUSION_ALPHA}" \
+  --adaptive_gate_min "${ADAPTIVE_GATE_MIN}" \
+  --adaptive_gate_max "${ADAPTIVE_GATE_MAX}" \
   --eval_sample_mode all \
   --desc "${DESC}" \
   --gpu "${GPU}" \

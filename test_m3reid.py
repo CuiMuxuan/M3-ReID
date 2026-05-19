@@ -137,7 +137,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID architecture used by M3Plus checkpoints')
     parser.add_argument('--m3plus_mode', default='full',
-                        choices=['full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'],
+                        choices=['full', 'part_only', 'local_residual', 'dual_fusion',
+                                 'temporal_dual_fusion', 'adaptive_dual_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,
@@ -151,7 +152,11 @@ if __name__ == '__main__':
     parser.add_argument('--temporal_dropout', default=0.0, type=float,
                         help='Dropout inside temporal_dual_fusion refinement head')
     parser.add_argument('--fusion_alpha', default=0.2, type=float,
-                        help='Local feature weight used by dual_fusion inference')
+                        help='Local feature weight used by dual_fusion inference, or initial local weight for adaptive_dual_fusion')
+    parser.add_argument('--adaptive_gate_min', default=0.0, type=float,
+                        help='Minimum local feature weight predicted by adaptive_dual_fusion')
+    parser.add_argument('--adaptive_gate_max', default=0.12, type=float,
+                        help='Maximum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
                         help='Accepted for architecture parity; checkpointing is only active during training')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
@@ -238,7 +243,9 @@ if __name__ == '__main__':
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
                    grad_checkpoint_head=args.grad_checkpoint_head,
-                   temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout).cuda()
+                   temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout,
+                   adaptive_gate_min=args.adaptive_gate_min,
+                   adaptive_gate_max=args.adaptive_gate_max).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
