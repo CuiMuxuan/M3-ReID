@@ -137,7 +137,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID architecture used by M3Plus checkpoints')
     parser.add_argument('--m3plus_mode', default='full',
-                        choices=['full', 'part_only', 'local_residual', 'dual_fusion'],
+                        choices=['full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,
@@ -146,6 +146,10 @@ if __name__ == '__main__':
                         help='Number of MVL attention heads per view')
     parser.add_argument('--feature_dropout', default=0.0, type=float,
                         help='Dropout value used by the checkpoint architecture')
+    parser.add_argument('--temporal_dim', default=256, type=int,
+                        help='Hidden dimension of temporal_dual_fusion refinement head')
+    parser.add_argument('--temporal_dropout', default=0.0, type=float,
+                        help='Dropout inside temporal_dual_fusion refinement head')
     parser.add_argument('--fusion_alpha', default=0.2, type=float,
                         help='Local feature weight used by dual_fusion inference')
     parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
@@ -233,7 +237,8 @@ if __name__ == '__main__':
                    use_enhancements=args.use_m3plus, m3plus_mode=args.m3plus_mode, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
-                   grad_checkpoint_head=args.grad_checkpoint_head).cuda()
+                   grad_checkpoint_head=args.grad_checkpoint_head,
+                   temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))

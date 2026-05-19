@@ -26,6 +26,7 @@ from models.modules.normalize import Normalize
 from models.modules.enhancement import LightweightChannelSpatialAttention
 from models.modules.enhancement import MultiScaleResidualFusion
 from models.modules.enhancement import PartGuidedAggregation
+from models.modules.enhancement import TemporalEmbeddingRefinement
 
 
 class M3ReID(nn.Module):
@@ -40,7 +41,7 @@ class M3ReID(nn.Module):
 
     def __init__(self, sample_seq_num, class_num, use_enhancements=False, m3plus_mode='full', part_num=4,
                  mvl_num_heads=2, part_dim=2048, feature_dropout=0.0, fusion_alpha=0.2,
-                 grad_checkpoint_head=False):
+                 grad_checkpoint_head=False, temporal_dim=256, temporal_dropout=0.0):
         """
         Initialize the M3-ReID model.
 
@@ -63,13 +64,16 @@ class M3ReID(nn.Module):
         self.sample_seq_num = sample_seq_num
         self.class_num = class_num
         self.use_enhancements = use_enhancements
-        if m3plus_mode not in ('full', 'part_only', 'local_residual', 'dual_fusion'):
+        if m3plus_mode not in ('full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
         self.use_feature_enhancers = use_enhancements and m3plus_mode == 'full'
-        self.use_part_branch = use_enhancements and m3plus_mode in ('full', 'part_only', 'local_residual', 'dual_fusion')
+        self.use_part_branch = use_enhancements and m3plus_mode in (
+            'full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'
+        )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
-        self.use_dual_fusion = use_enhancements and m3plus_mode == 'dual_fusion'
+        self.use_dual_fusion = use_enhancements and m3plus_mode in ('dual_fusion', 'temporal_dual_fusion')
+        self.use_temporal_refine = use_enhancements and m3plus_mode == 'temporal_dual_fusion'
         self.fusion_alpha = float(fusion_alpha)
         self.grad_checkpoint_head = grad_checkpoint_head
 
@@ -118,6 +122,10 @@ class M3ReID(nn.Module):
         self.bn_neck = nn.BatchNorm1d(self.embedding_dim)
         nn.init.constant_(self.bn_neck.bias, 0)
         self.bn_neck.bias.requires_grad_(False)
+        if self.use_temporal_refine:
+            self.temporal_refine = TemporalEmbeddingRefinement(
+                self.embedding_dim, hidden_channels=temporal_dim, dropout=temporal_dropout
+            )
         self.feature_dropout = nn.Dropout(p=feature_dropout) if feature_dropout > 0 else nn.Identity()
 
         self.classifier_frame = nn.Linear(self.embedding_dim, class_num, bias=False)
@@ -137,7 +145,7 @@ class M3ReID(nn.Module):
     def set_scheme_d_base_trainable(self, trainable):
         if not self.use_dual_fusion:
             return
-        part_prefixes = ('part_aggregation', 'part_bn_neck', 'part_classifier')
+        part_prefixes = ('part_aggregation', 'part_bn_neck', 'part_classifier', 'temporal_refine')
         for name, param in self.named_parameters():
             param.requires_grad_(trainable or name.startswith(part_prefixes))
 
@@ -251,6 +259,8 @@ class M3ReID(nn.Module):
         x_pool = x_pool.reshape(-1, t, c)
         x_pool_mean = torch.mean(x_pool, dim=1)
         x_embed = x_embed.reshape(-1, t, c)
+        if self.use_temporal_refine:
+            x_embed = self._checkpoint_if_enabled(self.temporal_refine, x_embed)
         x_embed_mean = torch.mean(x_embed, dim=1)
 
         part_aux = None

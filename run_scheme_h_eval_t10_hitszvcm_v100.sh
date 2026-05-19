@@ -19,6 +19,9 @@ PART_NUM="${PART_NUM:-4}"
 PART_DIM="${PART_DIM:-2048}"
 MVL_NUM_HEADS="${MVL_NUM_HEADS:-2}"
 FEATURE_DROPOUT="${FEATURE_DROPOUT:-0.0}"
+M3PLUS_MODE="${M3PLUS_MODE:-dual_fusion}"
+TEMPORAL_DIM="${TEMPORAL_DIM:-256}"
+TEMPORAL_DROPOUT="${TEMPORAL_DROPOUT:-0.0}"
 FUSION_ALPHA="${FUSION_ALPHA:-0.05}"
 MAX_EVAL_CLIPS="${MAX_EVAL_CLIPS:-0}"
 EVAL_FP16="${EVAL_FP16:-1}"
@@ -55,11 +58,13 @@ python test_m3reid.py \
   --cudnn_benchmark \
   --resume "${MODEL_CKPT}" \
   --use_m3plus \
-  --m3plus_mode dual_fusion \
+  --m3plus_mode "${M3PLUS_MODE}" \
   --mvl_num_heads "${MVL_NUM_HEADS}" \
   --part_num "${PART_NUM}" \
   --part_dim "${PART_DIM}" \
   --feature_dropout "${FEATURE_DROPOUT}" \
+  --temporal_dim "${TEMPORAL_DIM}" \
+  --temporal_dropout "${TEMPORAL_DROPOUT}" \
   --fusion_alpha "${FUSION_ALPHA}" \
   --eval_sample_mode all \
   --desc "${DESC}" \

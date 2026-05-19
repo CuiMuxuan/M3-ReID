@@ -112,3 +112,42 @@ class PartGuidedAggregation(nn.Module):
 
         reduced_parts = [self.part_reduce(part_feats[:, i, :]) for i in range(self.part_num)]
         return torch.cat(reduced_parts, dim=1)
+
+
+class TemporalEmbeddingRefinement(nn.Module):
+    """
+    Low-rank temporal residual refinement for frame-level video embeddings.
+
+    It is intentionally zero-initialized at the output projection so a warm-started
+    checkpoint begins with the same retrieval behavior and learns temporal context
+    only when the training losses support it.
+    """
+
+    def __init__(self, in_channels, hidden_channels=256, dropout=0.0):
+        super().__init__()
+        if hidden_channels <= 0:
+            raise ValueError('hidden_channels must be positive.')
+        self.norm = nn.LayerNorm(in_channels)
+        self.down = nn.Linear(in_channels, hidden_channels, bias=False)
+        self.temporal_conv = nn.Conv1d(
+            hidden_channels, hidden_channels, kernel_size=3, padding=1,
+            groups=hidden_channels, bias=False,
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels, bias=True),
+            nn.Sigmoid(),
+        )
+        self.act = nn.GELU()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.up = nn.Linear(hidden_channels, in_channels, bias=False)
+        self.scale = nn.Parameter(torch.tensor(0.1))
+        nn.init.zeros_(self.up.weight)
+
+    def forward(self, x):
+        residual = x
+        y = self.down(self.norm(x))
+        y = self.temporal_conv(y.transpose(1, 2)).transpose(1, 2)
+        y = self.act(y)
+        y = y * self.gate(y)
+        y = self.dropout(y)
+        return residual + self.scale * self.up(y)

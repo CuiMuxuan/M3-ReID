@@ -108,20 +108,25 @@ def build_optimizer(args, params):
 
 
 def build_train_params(args, model):
-    if args.m3plus_mode != 'dual_fusion' or args.part_lr_mult == 1.0:
-        return model.parameters()
-
     part_prefixes = ('part_aggregation', 'part_bn_neck', 'part_classifier')
-    base_params, part_params = [], []
+    temporal_prefixes = ('temporal_refine',)
+    base_params, part_params, temporal_params = [], [], []
     for name, param in model.named_parameters():
-        if name.startswith(part_prefixes):
+        if name.startswith(temporal_prefixes):
+            temporal_params.append(param)
+        elif name.startswith(part_prefixes):
             part_params.append(param)
         else:
             base_params.append(param)
-    return [
-        {'params': base_params, 'lr': args.lr},
-        {'params': part_params, 'lr': args.lr * args.part_lr_mult},
-    ]
+
+    param_groups = [{'params': base_params, 'lr': args.lr}]
+    if part_params:
+        param_groups.append({'params': part_params, 'lr': args.lr * args.part_lr_mult})
+    if temporal_params:
+        param_groups.append({'params': temporal_params, 'lr': args.lr * args.temporal_lr_mult})
+    if len(param_groups) == 1:
+        return model.parameters()
+    return param_groups
 
 
 def parse_lr_milestones(milestones):
@@ -178,7 +183,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
     parser.add_argument('--m3plus_mode', default='full',
-                        choices=['full', 'part_only', 'local_residual', 'dual_fusion'],
+                        choices=['full', 'part_only', 'local_residual', 'dual_fusion', 'temporal_dual_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='standard',
                         choices=['standard', 'mild', 'none'],
@@ -194,6 +199,12 @@ if __name__ == '__main__':
                         help='Local feature weight used by dual_fusion inference')
     parser.add_argument('--part_lr_mult', default=1.0, type=float,
                         help='Learning-rate multiplier for dual_fusion local branch parameters')
+    parser.add_argument('--temporal_dim', default=256, type=int,
+                        help='Hidden dimension of temporal_dual_fusion refinement head')
+    parser.add_argument('--temporal_dropout', default=0.0, type=float,
+                        help='Dropout inside temporal_dual_fusion refinement head')
+    parser.add_argument('--temporal_lr_mult', default=1.0, type=float,
+                        help='Learning-rate multiplier for temporal_dual_fusion refinement parameters')
     parser.add_argument('--freeze_base_epochs', default=0, type=int,
                         help='For dual_fusion, train only local branch for this many initial epochs')
     parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
@@ -381,7 +392,8 @@ if __name__ == '__main__':
                    use_enhancements=args.use_m3plus, m3plus_mode=args.m3plus_mode, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
-                   grad_checkpoint_head=args.grad_checkpoint_head).cuda()
+                   grad_checkpoint_head=args.grad_checkpoint_head,
+                   temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout).cuda()
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
@@ -464,6 +476,8 @@ if __name__ == '__main__':
           f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
           f'feature_dropout={args.feature_dropout}, fusion_alpha={args.fusion_alpha}, '
           f'part_lr_mult={args.part_lr_mult}, freeze_base_epochs={args.freeze_base_epochs}, '
+          f'temporal_dim={args.temporal_dim}, temporal_dropout={args.temporal_dropout}, '
+          f'temporal_lr_mult={args.temporal_lr_mult}, '
           f'part_id_weight={args.part_id_weight}, part_triplet_weight={args.part_triplet_weight}, '
           f'part_mma_weight={args.part_mma_weight}, '
           f'proto_weight={args.proto_weight}, part_proto_weight={args.part_proto_weight}, '
@@ -507,7 +521,7 @@ if __name__ == '__main__':
 
         # -- Train -----------------------------------------------------------------------------------------------------
         model.train()
-        if args.m3plus_mode == 'dual_fusion':
+        if args.m3plus_mode in ('dual_fusion', 'temporal_dual_fusion'):
             base_trainable = epoch >= args.freeze_base_epochs
             model.set_scheme_d_base_trainable(base_trainable)
             if epoch == 0 and not base_trainable:
