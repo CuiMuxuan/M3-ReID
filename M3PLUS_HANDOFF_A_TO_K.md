@@ -460,6 +460,21 @@ If Scheme M does not improve at least one direction by >=0.3 without hurting the
 If one direction improves but the other drops, rerun with the hurting direction's PART_RERANK_WEIGHT set to 0.0.
 ```
 
+Observed default result:
+
+```text
+Dv1 + SchemeH + SchemeM, topk=20, PART_RERANK_WEIGHT_I2V=0.015, PART_RERANK_WEIGHT_V2I=0.015
+i2v 74.85 / mAP 62.46 / mINP 35.79
+v2i 78.47 / mAP 65.32 / mINP 35.64
+```
+
+Interpretation:
+
+- Compared with Dv1 + SchemeH `74.67 / 78.15`, Scheme M gives `+0.18` i2v and `+0.32` v2i.
+- Compared with direction-specific Scheme L `74.72 / 78.15`, top-k reranking adds `+0.13` i2v and `+0.32` v2i.
+- This is the first post-SchemeH route that improves both directions without retraining, so continue a narrow Scheme M sweep.
+- Remaining HITSZ-VCM gap to target is `i2v -0.73`, `v2i -0.53`.
+
 ## SchemeH Evaluation Template
 
 Best Dv1 multi-clip evaluation:
