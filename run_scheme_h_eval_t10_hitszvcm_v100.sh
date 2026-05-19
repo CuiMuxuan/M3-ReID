@@ -26,6 +26,8 @@ FUSION_ALPHA="${FUSION_ALPHA:-0.05}"
 ADAPTIVE_GATE_MIN="${ADAPTIVE_GATE_MIN:-0.0}"
 ADAPTIVE_GATE_MAX="${ADAPTIVE_GATE_MAX:-0.10}"
 PART_MATCH_WEIGHT="${PART_MATCH_WEIGHT:-0.0}"
+PART_MATCH_WEIGHT_I2V="${PART_MATCH_WEIGHT_I2V:-}"
+PART_MATCH_WEIGHT_V2I="${PART_MATCH_WEIGHT_V2I:-}"
 PART_MATCH_NEIGHBOR_RADIUS="${PART_MATCH_NEIGHBOR_RADIUS:-1}"
 PART_MATCH_SYMMETRIC="${PART_MATCH_SYMMETRIC:-1}"
 MAX_EVAL_CLIPS="${MAX_EVAL_CLIPS:-0}"
@@ -50,6 +52,12 @@ if [ "${PART_MATCH_SYMMETRIC}" = "1" ]; then
   EXTRA_ARGS+=(--part_match_symmetric)
 else
   EXTRA_ARGS+=(--no-part_match_symmetric)
+fi
+if [ -n "${PART_MATCH_WEIGHT_I2V}" ]; then
+  EXTRA_ARGS+=(--part_match_weight_i2v "${PART_MATCH_WEIGHT_I2V}")
+fi
+if [ -n "${PART_MATCH_WEIGHT_V2I}" ]; then
+  EXTRA_ARGS+=(--part_match_weight_v2i "${PART_MATCH_WEIGHT_V2I}")
 fi
 
 source "$(conda info --base)/etc/profile.d/conda.sh"

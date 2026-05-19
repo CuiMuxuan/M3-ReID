@@ -402,6 +402,29 @@ Why it did not reach the target:
 - Best average Rank-1 stayed at epoch 5, so the gate did not show a useful upward trend.
 - The learned gate moved near the upper cap around 0.08-0.09, but this mostly increased local usage without fixing the v2i top-1 gap.
 
+## Scheme L: Part-Level Cross-Modal Matching Score
+
+Current status:
+
+- Implemented as evaluation-time score fusion on top of dual-fusion embeddings.
+- It keeps the Dv1/SchemeH checkpoint unchanged.
+- It splits the local branch into horizontal part descriptors and adds a small explicit part-match similarity to the retrieval score.
+- Direction-specific weights are supported through `PART_MATCH_WEIGHT_I2V` and `PART_MATCH_WEIGHT_V2I`.
+
+Observed default result:
+
+```text
+Dv1 + SchemeH + SchemeL, fusion_alpha=0.01, part_match_weight=0.02
+i2v 74.72 / mAP 62.43 / mINP 35.83
+v2i 78.11 / mAP 65.27 / mINP 35.54
+```
+
+Interpretation:
+
+- Compared with Dv1 + SchemeH `74.67 / 78.15`, this gives `+0.05` i2v but `-0.04` v2i.
+- Average Rank-1 is effectively unchanged, so Scheme L is not enough as a main route.
+- The weak i2v gain suggests testing direction-specific fusion: keep part matching for i2v, fall back to baseline scoring for v2i.
+
 ## SchemeH Evaluation Template
 
 Best Dv1 multi-clip evaluation:

@@ -144,9 +144,15 @@ def compute_part_match_similarity(query_embeddings, gallery_embeddings, global_d
     return score
 
 
-def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_dim):
+def resolve_part_match_weight(args, direction):
+    direction_weight = getattr(args, f'part_match_weight_{direction}', None)
+    return args.part_match_weight if direction_weight is None else direction_weight
+
+
+def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_dim, part_match_weight=None):
+    match_weight = args.part_match_weight if part_match_weight is None else part_match_weight
     similarity = torch.matmul(query_embeddings, gallery_embeddings.t())
-    if args.part_match_weight > 0:
+    if match_weight > 0:
         part_similarity = compute_part_match_similarity(
             query_embeddings, gallery_embeddings,
             global_dim=global_dim,
@@ -155,7 +161,7 @@ def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_d
             neighbor_radius=args.part_match_neighbor_radius,
             symmetric=args.part_match_symmetric,
         )
-        similarity = similarity + args.part_match_weight * part_similarity
+        similarity = similarity + match_weight * part_similarity
     return -similarity
 
 
@@ -216,6 +222,10 @@ if __name__ == '__main__':
                         help='Maximum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--part_match_weight', default=0.0, type=float,
                         help='Additive weight for Scheme L explicit part-level matching during evaluation')
+    parser.add_argument('--part_match_weight_i2v', default=None, type=float,
+                        help='Optional Scheme L part-match weight override for i2v evaluation')
+    parser.add_argument('--part_match_weight_v2i', default=None, type=float,
+                        help='Optional Scheme L part-match weight override for v2i evaluation')
     parser.add_argument('--part_match_neighbor_radius', default=1, type=int,
                         help='Part index radius for Scheme L matching. 0 matches only aligned parts')
     parser.add_argument('--part_match_symmetric', action=argparse.BooleanOptionalAction, default=True,
@@ -259,7 +269,10 @@ if __name__ == '__main__':
     print(f'Dataloader setting: {loader_kwargs}, non_blocking_cuda={args.non_blocking}, '
           f'eval_fp16={args.eval_fp16}, eval_sample_mode={args.eval_sample_mode}, '
           f'max_eval_clips={args.max_eval_clips}')
+    i2v_part_match_weight = resolve_part_match_weight(args, 'i2v')
+    v2i_part_match_weight = resolve_part_match_weight(args, 'v2i')
     print(f'SchemeL part matching: weight={args.part_match_weight}, '
+          f'i2v_weight={i2v_part_match_weight}, v2i_weight={v2i_part_match_weight}, '
           f'neighbor_radius={args.part_match_neighbor_radius}, symmetric={args.part_match_symmetric}')
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
@@ -329,7 +342,7 @@ if __name__ == '__main__':
 
     eval_embedding_dim = getattr(model, 'output_dim', model.embedding_dim)
     global_embedding_dim = model.embedding_dim
-    if args.part_match_weight > 0:
+    if max(i2v_part_match_weight, v2i_part_match_weight) > 0:
         dual_modes = ('dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion')
         if not (args.use_m3plus and args.m3plus_mode in dual_modes):
             raise ValueError('Scheme L part matching requires a dual-fusion M3Plus checkpoint.')
@@ -346,11 +359,17 @@ if __name__ == '__main__':
     e_time_1 = time.time()
 
     if args.dataset == 'HITSZVCM':
-        i2v_dist_mat = compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_embedding_dim)
+        i2v_dist_mat = compute_distance_matrix(
+            query_embeddings, gallery_embeddings, args, global_embedding_dim,
+            part_match_weight=i2v_part_match_weight,
+        )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices, q_pids, q_cids, g_pids, g_cids)
-        if args.part_match_weight > 0 and not args.part_match_symmetric:
-            v2i_dist_mat = compute_distance_matrix(gallery_embeddings, query_embeddings, args, global_embedding_dim)
+        if v2i_part_match_weight != i2v_part_match_weight or not args.part_match_symmetric:
+            v2i_dist_mat = compute_distance_matrix(
+                gallery_embeddings, query_embeddings, args, global_embedding_dim,
+                part_match_weight=v2i_part_match_weight,
+            )
         else:
             v2i_dist_mat = i2v_dist_mat.t()
         v2i_sorted_indices = torch.argsort(v2i_dist_mat, dim=1)
@@ -361,7 +380,8 @@ if __name__ == '__main__':
         i2v_q_pids, i2v_q_cids = q_pids[q_mids == 1], q_cids[q_mids == 1]
         i2v_g_pids, i2v_g_cids = g_pids[g_mids == 2], g_cids[g_mids == 2]
         i2v_dist_mat = compute_distance_matrix(
-            i2v_query_embeddings, i2v_gallery_embeddings, args, global_embedding_dim
+            i2v_query_embeddings, i2v_gallery_embeddings, args, global_embedding_dim,
+            part_match_weight=i2v_part_match_weight,
         )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices,
@@ -371,7 +391,8 @@ if __name__ == '__main__':
         v2i_q_pids, v2i_q_cids = q_pids[q_mids == 2], q_cids[q_mids == 2]
         v2i_g_pids, v2i_g_cids = g_pids[g_mids == 1], g_cids[g_mids == 1]
         v2i_dist_mat = compute_distance_matrix(
-            v2i_query_embeddings, v2i_gallery_embeddings, args, global_embedding_dim
+            v2i_query_embeddings, v2i_gallery_embeddings, args, global_embedding_dim,
+            part_match_weight=v2i_part_match_weight,
         )
         v2i_sorted_indices = torch.argsort(v2i_dist_mat, dim=1)
         v2i_cmc, v2i_mAP, v2i_mINP = get_cmc_mAP_mINP(v2i_sorted_indices,
