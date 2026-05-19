@@ -102,6 +102,63 @@ def extract_embeddings(model, dataset, loader, num_tracks, embedding_dim, args):
             torch.tensor(all_mids, device='cuda'))
 
 
+def compute_part_match_similarity(query_embeddings, gallery_embeddings, global_dim, part_dim, part_num,
+                                  neighbor_radius=1, symmetric=True):
+    if part_dim <= 0 or part_num <= 0 or part_dim % part_num != 0:
+        raise ValueError('part_dim must be positive and divisible by part_num for part matching.')
+
+    expected_dim = global_dim + part_dim
+    if query_embeddings.size(1) < expected_dim or gallery_embeddings.size(1) < expected_dim:
+        raise ValueError('Part matching requires dual-fusion embeddings with a global segment and a part segment.')
+
+    part_channels = part_dim // part_num
+    q_parts = query_embeddings[:, global_dim:expected_dim].reshape(-1, part_num, part_channels)
+    g_parts = gallery_embeddings[:, global_dim:expected_dim].reshape(-1, part_num, part_channels)
+    q_parts = F.normalize(q_parts.float(), p=2, dim=2)
+    g_parts = F.normalize(g_parts.float(), p=2, dim=2)
+
+    radius = max(0, int(neighbor_radius))
+    score = q_parts.new_zeros((q_parts.size(0), g_parts.size(0)))
+    for q_idx in range(part_num):
+        g_start = max(0, q_idx - radius)
+        g_end = min(part_num, q_idx + radius + 1)
+        best = None
+        for g_idx in range(g_start, g_end):
+            sim = torch.matmul(q_parts[:, q_idx, :], g_parts[:, g_idx, :].t())
+            best = sim if best is None else torch.maximum(best, sim)
+        score += best
+    score = score / part_num
+
+    if symmetric:
+        reverse_score = q_parts.new_zeros((q_parts.size(0), g_parts.size(0)))
+        for g_idx in range(part_num):
+            q_start = max(0, g_idx - radius)
+            q_end = min(part_num, g_idx + radius + 1)
+            best = None
+            for q_idx in range(q_start, q_end):
+                sim = torch.matmul(q_parts[:, q_idx, :], g_parts[:, g_idx, :].t())
+                best = sim if best is None else torch.maximum(best, sim)
+            reverse_score += best
+        score = 0.5 * (score + reverse_score / part_num)
+
+    return score
+
+
+def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_dim):
+    similarity = torch.matmul(query_embeddings, gallery_embeddings.t())
+    if args.part_match_weight > 0:
+        part_similarity = compute_part_match_similarity(
+            query_embeddings, gallery_embeddings,
+            global_dim=global_dim,
+            part_dim=args.part_dim,
+            part_num=args.part_num,
+            neighbor_radius=args.part_match_neighbor_radius,
+            symmetric=args.part_match_symmetric,
+        )
+        similarity = similarity + args.part_match_weight * part_similarity
+    return -similarity
+
+
 if __name__ == '__main__':
 
     # Arguments --------------------------------------------------------------------------------------------------------
@@ -157,6 +214,12 @@ if __name__ == '__main__':
                         help='Minimum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--adaptive_gate_max', default=0.12, type=float,
                         help='Maximum local feature weight predicted by adaptive_dual_fusion')
+    parser.add_argument('--part_match_weight', default=0.0, type=float,
+                        help='Additive weight for Scheme L explicit part-level matching during evaluation')
+    parser.add_argument('--part_match_neighbor_radius', default=1, type=int,
+                        help='Part index radius for Scheme L matching. 0 matches only aligned parts')
+    parser.add_argument('--part_match_symmetric', action=argparse.BooleanOptionalAction, default=True,
+                        help='Average query-to-gallery and gallery-to-query local-window part scores')
     parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
                         help='Accepted for architecture parity; checkpointing is only active during training')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
@@ -196,6 +259,8 @@ if __name__ == '__main__':
     print(f'Dataloader setting: {loader_kwargs}, non_blocking_cuda={args.non_blocking}, '
           f'eval_fp16={args.eval_fp16}, eval_sample_mode={args.eval_sample_mode}, '
           f'max_eval_clips={args.max_eval_clips}')
+    print(f'SchemeL part matching: weight={args.part_match_weight}, '
+          f'neighbor_radius={args.part_match_neighbor_radius}, symmetric={args.part_match_symmetric}')
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
     if args.dataset == 'HITSZVCM':
@@ -263,6 +328,13 @@ if __name__ == '__main__':
     s_time = time.time()
 
     eval_embedding_dim = getattr(model, 'output_dim', model.embedding_dim)
+    global_embedding_dim = model.embedding_dim
+    if args.part_match_weight > 0:
+        dual_modes = ('dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion')
+        if not (args.use_m3plus and args.m3plus_mode in dual_modes):
+            raise ValueError('Scheme L part matching requires a dual-fusion M3Plus checkpoint.')
+        if eval_embedding_dim < global_embedding_dim + args.part_dim:
+            raise ValueError('Scheme L part matching could not find the local part segment in embeddings.')
     with torch.no_grad():
         query_embeddings, q_pids, q_cids, q_mids = extract_embeddings(
             model, query_dataset, query_loader, num_query, eval_embedding_dim, args
@@ -274,10 +346,13 @@ if __name__ == '__main__':
     e_time_1 = time.time()
 
     if args.dataset == 'HITSZVCM':
-        i2v_dist_mat = -torch.matmul(query_embeddings, gallery_embeddings.t())
+        i2v_dist_mat = compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_embedding_dim)
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices, q_pids, q_cids, g_pids, g_cids)
-        v2i_dist_mat = i2v_dist_mat.t()
+        if args.part_match_weight > 0 and not args.part_match_symmetric:
+            v2i_dist_mat = compute_distance_matrix(gallery_embeddings, query_embeddings, args, global_embedding_dim)
+        else:
+            v2i_dist_mat = i2v_dist_mat.t()
         v2i_sorted_indices = torch.argsort(v2i_dist_mat, dim=1)
         v2i_cmc, v2i_mAP, v2i_mINP = get_cmc_mAP_mINP(v2i_sorted_indices, g_pids, g_cids, q_pids, q_cids)
     elif args.dataset == 'BUPTCampus':
@@ -285,7 +360,9 @@ if __name__ == '__main__':
         i2v_gallery_embeddings = gallery_embeddings[g_mids == 2]
         i2v_q_pids, i2v_q_cids = q_pids[q_mids == 1], q_cids[q_mids == 1]
         i2v_g_pids, i2v_g_cids = g_pids[g_mids == 2], g_cids[g_mids == 2]
-        i2v_dist_mat = -torch.matmul(i2v_query_embeddings, i2v_gallery_embeddings.t())
+        i2v_dist_mat = compute_distance_matrix(
+            i2v_query_embeddings, i2v_gallery_embeddings, args, global_embedding_dim
+        )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices,
                                                       i2v_q_pids, i2v_q_cids, i2v_g_pids, i2v_g_cids)
@@ -293,7 +370,9 @@ if __name__ == '__main__':
         v2i_gallery_embeddings = gallery_embeddings[g_mids == 1]
         v2i_q_pids, v2i_q_cids = q_pids[q_mids == 2], q_cids[q_mids == 2]
         v2i_g_pids, v2i_g_cids = g_pids[g_mids == 1], g_cids[g_mids == 1]
-        v2i_dist_mat = -torch.matmul(v2i_query_embeddings, v2i_gallery_embeddings.t())
+        v2i_dist_mat = compute_distance_matrix(
+            v2i_query_embeddings, v2i_gallery_embeddings, args, global_embedding_dim
+        )
         v2i_sorted_indices = torch.argsort(v2i_dist_mat, dim=1)
         v2i_cmc, v2i_mAP, v2i_mINP = get_cmc_mAP_mINP(v2i_sorted_indices,
                                                       v2i_q_pids, v2i_q_cids, v2i_g_pids, v2i_g_cids)

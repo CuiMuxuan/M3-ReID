@@ -25,6 +25,9 @@ TEMPORAL_DROPOUT="${TEMPORAL_DROPOUT:-0.0}"
 FUSION_ALPHA="${FUSION_ALPHA:-0.05}"
 ADAPTIVE_GATE_MIN="${ADAPTIVE_GATE_MIN:-0.0}"
 ADAPTIVE_GATE_MAX="${ADAPTIVE_GATE_MAX:-0.10}"
+PART_MATCH_WEIGHT="${PART_MATCH_WEIGHT:-0.0}"
+PART_MATCH_NEIGHBOR_RADIUS="${PART_MATCH_NEIGHBOR_RADIUS:-1}"
+PART_MATCH_SYMMETRIC="${PART_MATCH_SYMMETRIC:-1}"
 MAX_EVAL_CLIPS="${MAX_EVAL_CLIPS:-0}"
 EVAL_FP16="${EVAL_FP16:-1}"
 PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
@@ -42,6 +45,11 @@ else
 fi
 if [ "${MAX_EVAL_CLIPS}" != "0" ]; then
   EXTRA_ARGS+=(--max_eval_clips "${MAX_EVAL_CLIPS}")
+fi
+if [ "${PART_MATCH_SYMMETRIC}" = "1" ]; then
+  EXTRA_ARGS+=(--part_match_symmetric)
+else
+  EXTRA_ARGS+=(--no-part_match_symmetric)
 fi
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
@@ -70,6 +78,8 @@ python test_m3reid.py \
   --fusion_alpha "${FUSION_ALPHA}" \
   --adaptive_gate_min "${ADAPTIVE_GATE_MIN}" \
   --adaptive_gate_max "${ADAPTIVE_GATE_MAX}" \
+  --part_match_weight "${PART_MATCH_WEIGHT}" \
+  --part_match_neighbor_radius "${PART_MATCH_NEIGHBOR_RADIUS}" \
   --eval_sample_mode all \
   --desc "${DESC}" \
   --gpu "${GPU}" \
