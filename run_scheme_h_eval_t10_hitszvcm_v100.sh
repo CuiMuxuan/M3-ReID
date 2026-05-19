@@ -30,6 +30,11 @@ PART_MATCH_WEIGHT_I2V="${PART_MATCH_WEIGHT_I2V:-}"
 PART_MATCH_WEIGHT_V2I="${PART_MATCH_WEIGHT_V2I:-}"
 PART_MATCH_NEIGHBOR_RADIUS="${PART_MATCH_NEIGHBOR_RADIUS:-1}"
 PART_MATCH_SYMMETRIC="${PART_MATCH_SYMMETRIC:-1}"
+PART_RERANK_TOPK="${PART_RERANK_TOPK:-0}"
+PART_RERANK_WEIGHT="${PART_RERANK_WEIGHT:-0.0}"
+PART_RERANK_WEIGHT_I2V="${PART_RERANK_WEIGHT_I2V:-}"
+PART_RERANK_WEIGHT_V2I="${PART_RERANK_WEIGHT_V2I:-}"
+PART_RERANK_NORM="${PART_RERANK_NORM:-zscore}"
 MAX_EVAL_CLIPS="${MAX_EVAL_CLIPS:-0}"
 EVAL_FP16="${EVAL_FP16:-1}"
 PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
@@ -58,6 +63,12 @@ if [ -n "${PART_MATCH_WEIGHT_I2V}" ]; then
 fi
 if [ -n "${PART_MATCH_WEIGHT_V2I}" ]; then
   EXTRA_ARGS+=(--part_match_weight_v2i "${PART_MATCH_WEIGHT_V2I}")
+fi
+if [ -n "${PART_RERANK_WEIGHT_I2V}" ]; then
+  EXTRA_ARGS+=(--part_rerank_weight_i2v "${PART_RERANK_WEIGHT_I2V}")
+fi
+if [ -n "${PART_RERANK_WEIGHT_V2I}" ]; then
+  EXTRA_ARGS+=(--part_rerank_weight_v2i "${PART_RERANK_WEIGHT_V2I}")
 fi
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
@@ -88,6 +99,9 @@ python test_m3reid.py \
   --adaptive_gate_max "${ADAPTIVE_GATE_MAX}" \
   --part_match_weight "${PART_MATCH_WEIGHT}" \
   --part_match_neighbor_radius "${PART_MATCH_NEIGHBOR_RADIUS}" \
+  --part_rerank_topk "${PART_RERANK_TOPK}" \
+  --part_rerank_weight "${PART_RERANK_WEIGHT}" \
+  --part_rerank_norm "${PART_RERANK_NORM}" \
   --eval_sample_mode all \
   --desc "${DESC}" \
   --gpu "${GPU}" \

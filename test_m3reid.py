@@ -149,10 +149,47 @@ def resolve_part_match_weight(args, direction):
     return args.part_match_weight if direction_weight is None else direction_weight
 
 
-def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_dim, part_match_weight=None):
+def resolve_part_rerank_weight(args, direction):
+    direction_weight = getattr(args, f'part_rerank_weight_{direction}', None)
+    return args.part_rerank_weight if direction_weight is None else direction_weight
+
+
+def normalize_candidate_scores(scores, mode):
+    if mode == 'none':
+        return scores
+    centered = scores - scores.mean(dim=1, keepdim=True)
+    if mode == 'center':
+        return centered
+    if mode == 'zscore':
+        scale = scores.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-6)
+        return centered / scale
+    raise ValueError(f'Unsupported part_rerank_norm: {mode}')
+
+
+def apply_topk_part_rerank(similarity, part_similarity, topk, weight, norm_mode):
+    if topk <= 0 or weight <= 0:
+        return similarity
+
+    k = min(int(topk), similarity.size(1))
+    if k <= 0:
+        return similarity
+
+    top_indices = torch.topk(similarity, k=k, dim=1, largest=True, sorted=False).indices
+    base_scores = similarity.gather(1, top_indices)
+    local_scores = part_similarity.gather(1, top_indices)
+    local_scores = normalize_candidate_scores(local_scores.float(), norm_mode).to(base_scores.dtype)
+
+    reranked = similarity.clone()
+    reranked.scatter_(1, top_indices, base_scores + weight * local_scores)
+    return reranked
+
+
+def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_dim,
+                            part_match_weight=None, part_rerank_weight=None):
     match_weight = args.part_match_weight if part_match_weight is None else part_match_weight
+    rerank_weight = args.part_rerank_weight if part_rerank_weight is None else part_rerank_weight
     similarity = torch.matmul(query_embeddings, gallery_embeddings.t())
-    if match_weight > 0:
+    if match_weight > 0 or rerank_weight > 0:
         part_similarity = compute_part_match_similarity(
             query_embeddings, gallery_embeddings,
             global_dim=global_dim,
@@ -161,7 +198,16 @@ def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_d
             neighbor_radius=args.part_match_neighbor_radius,
             symmetric=args.part_match_symmetric,
         )
+    else:
+        part_similarity = None
+
+    if match_weight > 0:
         similarity = similarity + match_weight * part_similarity
+    if rerank_weight > 0:
+        similarity = apply_topk_part_rerank(
+            similarity, part_similarity, args.part_rerank_topk,
+            rerank_weight, args.part_rerank_norm
+        )
     return -similarity
 
 
@@ -230,6 +276,16 @@ if __name__ == '__main__':
                         help='Part index radius for Scheme L matching. 0 matches only aligned parts')
     parser.add_argument('--part_match_symmetric', action=argparse.BooleanOptionalAction, default=True,
                         help='Average query-to-gallery and gallery-to-query local-window part scores')
+    parser.add_argument('--part_rerank_topk', default=0, type=int,
+                        help='Scheme M top-k candidate count for local part reranking. Set 0 to disable')
+    parser.add_argument('--part_rerank_weight', default=0.0, type=float,
+                        help='Scheme M local part rerank weight applied inside top-k candidates')
+    parser.add_argument('--part_rerank_weight_i2v', default=None, type=float,
+                        help='Optional Scheme M part-rerank weight override for i2v evaluation')
+    parser.add_argument('--part_rerank_weight_v2i', default=None, type=float,
+                        help='Optional Scheme M part-rerank weight override for v2i evaluation')
+    parser.add_argument('--part_rerank_norm', default='zscore', choices=['none', 'center', 'zscore'],
+                        help='Normalization applied to candidate part scores before Scheme M reranking')
     parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
                         help='Accepted for architecture parity; checkpointing is only active during training')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
@@ -271,9 +327,14 @@ if __name__ == '__main__':
           f'max_eval_clips={args.max_eval_clips}')
     i2v_part_match_weight = resolve_part_match_weight(args, 'i2v')
     v2i_part_match_weight = resolve_part_match_weight(args, 'v2i')
+    i2v_part_rerank_weight = resolve_part_rerank_weight(args, 'i2v')
+    v2i_part_rerank_weight = resolve_part_rerank_weight(args, 'v2i')
     print(f'SchemeL part matching: weight={args.part_match_weight}, '
           f'i2v_weight={i2v_part_match_weight}, v2i_weight={v2i_part_match_weight}, '
           f'neighbor_radius={args.part_match_neighbor_radius}, symmetric={args.part_match_symmetric}')
+    print(f'SchemeM part rerank: topk={args.part_rerank_topk}, weight={args.part_rerank_weight}, '
+          f'i2v_weight={i2v_part_rerank_weight}, v2i_weight={v2i_part_rerank_weight}, '
+          f'norm={args.part_rerank_norm}')
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
     if args.dataset == 'HITSZVCM':
@@ -342,7 +403,11 @@ if __name__ == '__main__':
 
     eval_embedding_dim = getattr(model, 'output_dim', model.embedding_dim)
     global_embedding_dim = model.embedding_dim
-    if max(i2v_part_match_weight, v2i_part_match_weight) > 0:
+    max_local_score_weight = max(
+        i2v_part_match_weight, v2i_part_match_weight,
+        i2v_part_rerank_weight, v2i_part_rerank_weight,
+    )
+    if max_local_score_weight > 0:
         dual_modes = ('dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion')
         if not (args.use_m3plus and args.m3plus_mode in dual_modes):
             raise ValueError('Scheme L part matching requires a dual-fusion M3Plus checkpoint.')
@@ -362,13 +427,19 @@ if __name__ == '__main__':
         i2v_dist_mat = compute_distance_matrix(
             query_embeddings, gallery_embeddings, args, global_embedding_dim,
             part_match_weight=i2v_part_match_weight,
+            part_rerank_weight=i2v_part_rerank_weight,
         )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices, q_pids, q_cids, g_pids, g_cids)
-        if v2i_part_match_weight != i2v_part_match_weight or not args.part_match_symmetric:
+        same_local_scoring = (v2i_part_match_weight == i2v_part_match_weight
+                              and i2v_part_rerank_weight == 0
+                              and v2i_part_rerank_weight == 0
+                              and args.part_match_symmetric)
+        if not same_local_scoring:
             v2i_dist_mat = compute_distance_matrix(
                 gallery_embeddings, query_embeddings, args, global_embedding_dim,
                 part_match_weight=v2i_part_match_weight,
+                part_rerank_weight=v2i_part_rerank_weight,
             )
         else:
             v2i_dist_mat = i2v_dist_mat.t()
@@ -382,6 +453,7 @@ if __name__ == '__main__':
         i2v_dist_mat = compute_distance_matrix(
             i2v_query_embeddings, i2v_gallery_embeddings, args, global_embedding_dim,
             part_match_weight=i2v_part_match_weight,
+            part_rerank_weight=i2v_part_rerank_weight,
         )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices,
@@ -393,6 +465,7 @@ if __name__ == '__main__':
         v2i_dist_mat = compute_distance_matrix(
             v2i_query_embeddings, v2i_gallery_embeddings, args, global_embedding_dim,
             part_match_weight=v2i_part_match_weight,
+            part_rerank_weight=v2i_part_rerank_weight,
         )
         v2i_sorted_indices = torch.argsort(v2i_dist_mat, dim=1)
         v2i_cmc, v2i_mAP, v2i_mINP = get_cmc_mAP_mINP(v2i_sorted_indices,

@@ -419,11 +419,46 @@ i2v 74.72 / mAP 62.43 / mINP 35.83
 v2i 78.11 / mAP 65.27 / mINP 35.54
 ```
 
+Observed direction-specific result:
+
+```text
+Dv1 + SchemeH + SchemeL, fusion_alpha=0.01, PART_MATCH_WEIGHT_I2V=0.02, PART_MATCH_WEIGHT_V2I=0.0
+i2v 74.72 / mAP 62.43 / mINP 35.83
+v2i 78.15 / mAP 65.24 / mINP 35.47
+```
+
 Interpretation:
 
 - Compared with Dv1 + SchemeH `74.67 / 78.15`, this gives `+0.05` i2v but `-0.04` v2i.
 - Average Rank-1 is effectively unchanged, so Scheme L is not enough as a main route.
 - The weak i2v gain suggests testing direction-specific fusion: keep part matching for i2v, fall back to baseline scoring for v2i.
+- Direction-specific fusion successfully avoids the v2i loss, but the i2v gain remains only `+0.05`; Scheme L alone is not enough.
+
+## Scheme M: Top-K Part Candidate Reranking
+
+Current status:
+
+- Implemented as evaluation-time top-k reranking.
+- It first ranks candidates with the current fused score, then only adjusts each query's top-k candidates with a normalized explicit part-match score.
+- Default script: `run_scheme_m_eval_t10_hitszvcm_v100.sh`.
+
+Default parameters:
+
+```text
+PART_MATCH_WEIGHT_I2V=0.02
+PART_MATCH_WEIGHT_V2I=0.0
+PART_RERANK_TOPK=20
+PART_RERANK_WEIGHT_I2V=0.015
+PART_RERANK_WEIGHT_V2I=0.015
+PART_RERANK_NORM=zscore
+```
+
+Decision rule:
+
+```text
+If Scheme M does not improve at least one direction by >=0.3 without hurting the other direction, stop reranking-only work.
+If one direction improves but the other drops, rerun with the hurting direction's PART_RERANK_WEIGHT set to 0.0.
+```
 
 ## SchemeH Evaluation Template
 
