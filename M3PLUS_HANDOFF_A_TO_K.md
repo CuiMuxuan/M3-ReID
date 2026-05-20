@@ -14,16 +14,16 @@
 Current best HITSZ-VCM result:
 
 ```text
-SchemeD Dv1 + SchemeH multi-clip alpha=0.01
-i2v 74.67 / mAP 62.39
-v2i 78.15 / mAP 65.23
+SchemeD Dv1 + SchemeH multi-clip + SchemeM/N direction-aware reranking
+i2v 75.70 / mAP 63.13 / mINP 36.03
+v2i 79.00 / mAP 65.95 / mINP 36.19
 ```
 
 Remaining gap on HITSZ-VCM:
 
 ```text
-i2v: -0.91
-v2i: -0.85
+i2v: reached target
+v2i: reached target
 ```
 
 Important checkpoints:
@@ -600,23 +600,50 @@ Dataset path:
 Current status:
 
 - BUPTCampus evaluation is supported by `test_m3reid.py`.
-- BUPTCampus-specific SchemeH and SchemeN wrapper scripts have been added.
-- HITSZ-VCM final SchemeN parameters are a strong starting point, but they are not yet validated on BUPTCampus.
+- No current BUPTCampus checkpoint has been trained in this M3Plus round.
+- BUPTCampus-specific baseline, SchemeD, SchemeH, and SchemeN wrapper scripts are available.
+- Do not start from SchemeN evaluation yet; first train a BUPTCampus baseline checkpoint, then warm-start SchemeD from that checkpoint.
 
 New scripts:
 
 ```text
+run_baseline_t10_buptcampus_v100.sh
+run_scheme_d_t10_buptcampus_v100.sh
 run_scheme_h_eval_t10_buptcampus_v100.sh
 run_scheme_n_eval_t10_buptcampus_v100.sh
 run_scheme_n_sweep_t10_buptcampus_v100.sh
 ```
 
-Initial BUPTCampus evaluation plan:
+Initial BUPTCampus training/evaluation plan:
 
 ```text
-1. Evaluate the strongest BUPTCampus dual_fusion checkpoint with SchemeH multi-clip.
-2. Evaluate SchemeN using the HITSZ-final reranking parameters.
-3. Sweep FUSION_ALPHA first because BUPTCampus dual_fusion training defaults used larger alpha values than HITSZ.
+1. Train the original BUPTCampus t=10 baseline and record its best Rank-1.
+2. Set the BUPTCampus +2 targets from that baseline.
+3. Warm-start SchemeD dual_fusion from the BUPTCampus baseline checkpoint.
+4. Evaluate the best SchemeD checkpoint with SchemeH multi-clip.
+5. Only after SchemeD exists, evaluate SchemeN and sweep FUSION_ALPHA / reciprocal weights.
+```
+
+Baseline training command:
+
+```bash
+tmux new -d -s m3_bupt_base 'cd /root/work/M3-ReID && CONDA_ENV=base BUPT_DIR=/root/work/BUPTCampus bash ./run_baseline_t10_buptcampus_v100.sh'
+```
+
+OOM-safe baseline defaults after the first BUPTCampus OOM:
+
+```text
+P_NUM=4
+K_NUM=4
+train_batch_size=16
+ACCUM_STEPS=2
+TEST_BATCH_SIZE=16
+```
+
+SchemeD training command after baseline finishes:
+
+```bash
+tmux new -d -s m3_bupt_d 'cd /root/work/M3-ReID && CONDA_ENV=base BUPT_DIR=/root/work/BUPTCampus BASELINE_CKPT=/root/work/M3-ReID/ckptlog/BUPTCampus/<baseline-dir>/modelckpt/model_best.pth bash ./run_scheme_d_t10_buptcampus_v100.sh'
 ```
 
 Default SchemeN BUPTCampus sweep:
