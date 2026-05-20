@@ -6,7 +6,7 @@ if [ -z "${MODEL_CKPT:-}" ]; then
   exit 1
 fi
 
-SWEEP_CONFIGS="${SWEEP_CONFIGS:-20:0.015:0.015 20:0.018:0.015 20:0.020:0.015 20:0.015:0.018}"
+SWEEP_CONFIGS="${SWEEP_CONFIGS:-20:0.018:0.015 20:0.020:0.015}"
 
 for config in ${SWEEP_CONFIGS}; do
   IFS=: read -r reciprocal_topk i2v_weight v2i_weight <<< "${config}"
