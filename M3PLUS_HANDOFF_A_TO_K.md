@@ -571,18 +571,74 @@ Narrow reciprocal-weight sweep:
 | rk20 / i2v0.025 / v2i0.015 | 75.70 | 63.13 | 36.03 | 78.94 | 65.82 | 36.09 | Best i2v so far |
 | rk20 / i2v0.020 / v2i0.018 | 75.57 | 63.04 | 36.01 | 78.96 | 65.88 | 36.13 | Best v2i so far, i2v short by 0.01 |
 | rk20 / i2v0.022 / v2i0.018 | 75.59 | 63.08 | 36.02 | 78.96 | 65.88 | 36.12 | Best balanced near-target setting |
+| rk20 / i2v0.022 / v2i0.020 | 75.59 | 63.08 | 36.02 | 78.96 | 65.92 | 36.17 | v2i still short |
+| rk20 / i2v0.025 / v2i0.020 | 75.70 | 63.13 | 36.03 | 78.96 | 65.92 | 36.17 | Strong i2v, v2i still short |
+| rk20 / i2v0.022 / v2i0.022 | 75.59 | 63.08 | 36.02 | 79.00 | 65.95 | 36.19 | Reaches both targets |
+| rk20 / i2v0.025 / v2i0.022 | 75.70 | 63.13 | 36.03 | 79.00 | 65.95 | 36.19 | Final best: strongest i2v and target v2i |
 
 Next priority:
 
 ```text
-Current best balanced setting is rk20 / i2v0.022 / v2i0.018.
-It reaches i2v target and leaves v2i short by 0.04.
-Best i2v-only setting is rk20 / i2v0.025 / v2i0.015 at 75.70 / 78.94.
-Next, only increase v2i reciprocal weight while keeping i2v above target:
-- i2v0.022 / v2i0.020
-- i2v0.025 / v2i0.020
-- i2v0.022 / v2i0.022
-- i2v0.025 / v2i0.022
+Final HITSZ-VCM best:
+rk20 / i2v0.025 / v2i0.022
+i2v 75.70 / mAP 63.13 / mINP 36.03
+v2i 79.00 / mAP 65.95 / mINP 36.19
+
+This reaches the HITSZ-VCM target `i2v 75.58 / v2i 79.00`.
+Compared with Dv1 + SchemeH `74.67 / 78.15`, final SchemeN gain is `+1.03` i2v and `+0.85` v2i.
+Compared with original baseline target gap, this closes the needed remaining gap on HITSZ-VCM.
+```
+
+## BUPTCampus Next Stage
+
+Dataset path:
+
+```text
+/root/work/BUPTCampus
+```
+
+Current status:
+
+- BUPTCampus evaluation is supported by `test_m3reid.py`.
+- BUPTCampus-specific SchemeH and SchemeN wrapper scripts have been added.
+- HITSZ-VCM final SchemeN parameters are a strong starting point, but they are not yet validated on BUPTCampus.
+
+New scripts:
+
+```text
+run_scheme_h_eval_t10_buptcampus_v100.sh
+run_scheme_n_eval_t10_buptcampus_v100.sh
+run_scheme_n_sweep_t10_buptcampus_v100.sh
+```
+
+Initial BUPTCampus evaluation plan:
+
+```text
+1. Evaluate the strongest BUPTCampus dual_fusion checkpoint with SchemeH multi-clip.
+2. Evaluate SchemeN using the HITSZ-final reranking parameters.
+3. Sweep FUSION_ALPHA first because BUPTCampus dual_fusion training defaults used larger alpha values than HITSZ.
+```
+
+Default SchemeN BUPTCampus sweep:
+
+```text
+0.01:20:0.025:0.022
+0.05:20:0.025:0.022
+0.10:20:0.025:0.022
+0.20:20:0.025:0.022
+```
+
+Format:
+
+```text
+FUSION_ALPHA:RECIPROCAL_TOPK:RECIPROCAL_WEIGHT_I2V:RECIPROCAL_WEIGHT_V2I
+```
+
+Important:
+
+```text
+Before judging BUPTCampus progress, identify the baseline Rank-1 and the +2 target for both directions.
+Do not assume HITSZ final weights are optimal on BUPTCampus.
 ```
 
 ## SchemeH Evaluation Template

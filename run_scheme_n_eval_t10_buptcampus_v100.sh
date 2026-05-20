@@ -2,7 +2,7 @@
 set -euo pipefail
 
 export M3PLUS_MODE="${M3PLUS_MODE:-dual_fusion}"
-export FUSION_ALPHA="${FUSION_ALPHA:-0.01}"
+export FUSION_ALPHA="${FUSION_ALPHA:-0.05}"
 export PART_MATCH_WEIGHT="${PART_MATCH_WEIGHT:-0.0}"
 export PART_MATCH_WEIGHT_I2V="${PART_MATCH_WEIGHT_I2V:-0.02}"
 export PART_MATCH_WEIGHT_V2I="${PART_MATCH_WEIGHT_V2I:-0.0}"
@@ -19,6 +19,7 @@ export RECIPROCAL_TOPK="${RECIPROCAL_TOPK:-20}"
 export RECIPROCAL_WEIGHT="${RECIPROCAL_WEIGHT:-0.0}"
 export RECIPROCAL_WEIGHT_I2V="${RECIPROCAL_WEIGHT_I2V:-0.025}"
 export RECIPROCAL_WEIGHT_V2I="${RECIPROCAL_WEIGHT_V2I:-0.022}"
-export DESC="${DESC:-SchemeN_reciprocal_schemeD_alpha${FUSION_ALPHA}_rk${RECIPROCAL_TOPK}_rw${RECIPROCAL_WEIGHT_I2V}_${RECIPROCAL_WEIGHT_V2I}_t10_hitszvcm_v100}"
+export DESC="${DESC:-SchemeN_reciprocal_schemeD_alpha${FUSION_ALPHA}_rk${RECIPROCAL_TOPK}_rw${RECIPROCAL_WEIGHT_I2V}_${RECIPROCAL_WEIGHT_V2I}_t10_buptcampus_v100}"
 
-bash ./run_scheme_h_eval_t10_hitszvcm_v100.sh
+bash ./run_scheme_h_eval_t10_buptcampus_v100.sh
+
