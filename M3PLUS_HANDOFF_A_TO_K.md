@@ -565,14 +565,20 @@ Narrow reciprocal-weight sweep:
 | rk20 / i2v0.015 / v2i0.010 | 75.39 | 62.90 | 35.93 | 78.72 | 65.69 | 35.96 | Best i2v so far |
 | rk20 / i2v0.010 / v2i0.015 | 75.22 | 62.74 | 35.85 | 78.94 | 65.82 | 36.08 | Best v2i so far |
 | rk20 / i2v0.015 / v2i0.015 | 75.39 | 62.90 | 35.93 | 78.94 | 65.82 | 36.08 | Current best, combines both directions |
+| rk20 / i2v0.018 / v2i0.015 | 75.55 | 62.99 | 35.97 | 78.94 | 65.82 | 36.08 | i2v nearly reaches target |
+| rk20 / i2v0.020 / v2i0.015 | 75.57 | 63.04 | 36.01 | 78.94 | 65.82 | 36.08 | Current best, i2v short by 0.01 |
 
 Next priority:
 
 ```text
-Current best is rk20 / i2v0.015 / v2i0.015.
-Remaining gap is i2v -0.19 / v2i -0.06.
+Current best is rk20 / i2v0.020 / v2i0.015.
+Remaining gap is i2v -0.01 / v2i -0.06.
 Do not increase v2i weight first; v2i is already close to target.
-Test slightly stronger i2v weights with v2i fixed at 0.015: i2v0.018 and i2v0.020.
+Test final small reciprocal changes:
+- i2v0.022 / v2i0.015
+- i2v0.025 / v2i0.015
+- i2v0.020 / v2i0.018
+- i2v0.022 / v2i0.018
 ```
 
 ## SchemeH Evaluation Template
