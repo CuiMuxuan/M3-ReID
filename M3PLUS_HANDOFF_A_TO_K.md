@@ -502,6 +502,45 @@ Top-k sensitivity is directional:
 Add direction-specific top-k and test i2v_topk=10, v2i_topk=30 with rerank weights 0.015/0.015.
 ```
 
+Observed direction-specific top-k result:
+
+```text
+SchemeM direction-specific top-k, i2v_topk=10, v2i_topk=30, weights 0.015/0.015
+i2v 74.87 / mAP 62.37 / mINP 35.62
+v2i 78.49 / mAP 65.36 / mINP 35.70
+```
+
+Interpretation:
+
+- This combines the best observed directional Rank-1 values from the sweep.
+- Compared with Dv1 + SchemeH `74.67 / 78.15`, the gain is `+0.20` i2v and `+0.34` v2i.
+- Remaining HITSZ-VCM gap to target is `i2v -0.71`, `v2i -0.51`.
+- Scheme M appears near saturation as an evaluation-only part-reranking route; further same-style sweeps are unlikely to close the full gap.
+
+## Scheme N: Cross-Modal Reciprocal Candidate Boost
+
+Rationale:
+
+- Remaining errors are top-1 ordering errors after multi-clip, part matching, and top-k part reranking.
+- A common failure mode is a gallery/query hub that is close to many opposite-modality samples but is not a reciprocal neighbor of the current query.
+- Scheme N gives a small boost only to candidates inside the current top-k list that are also reciprocal top-k neighbors in the reverse direction.
+
+Default setting:
+
+```text
+Base: SchemeM direction-specific top-k
+RECIPROCAL_TOPK=20
+RECIPROCAL_WEIGHT_I2V=0.010
+RECIPROCAL_WEIGHT_V2I=0.010
+```
+
+Decision rule:
+
+```text
+If reciprocal boost improves both directions or moves one direction by >=0.2 without hurting the other, continue a tiny sweep.
+If it hurts either direction by >=0.1, stop Scheme N or set the hurting direction's reciprocal weight to 0.
+```
+
 ## SchemeH Evaluation Template
 
 Best Dv1 multi-clip evaluation:

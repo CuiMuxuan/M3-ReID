@@ -37,6 +37,12 @@ PART_RERANK_WEIGHT="${PART_RERANK_WEIGHT:-0.0}"
 PART_RERANK_WEIGHT_I2V="${PART_RERANK_WEIGHT_I2V:-}"
 PART_RERANK_WEIGHT_V2I="${PART_RERANK_WEIGHT_V2I:-}"
 PART_RERANK_NORM="${PART_RERANK_NORM:-zscore}"
+RECIPROCAL_TOPK="${RECIPROCAL_TOPK:-0}"
+RECIPROCAL_TOPK_I2V="${RECIPROCAL_TOPK_I2V:-}"
+RECIPROCAL_TOPK_V2I="${RECIPROCAL_TOPK_V2I:-}"
+RECIPROCAL_WEIGHT="${RECIPROCAL_WEIGHT:-0.0}"
+RECIPROCAL_WEIGHT_I2V="${RECIPROCAL_WEIGHT_I2V:-}"
+RECIPROCAL_WEIGHT_V2I="${RECIPROCAL_WEIGHT_V2I:-}"
 MAX_EVAL_CLIPS="${MAX_EVAL_CLIPS:-0}"
 EVAL_FP16="${EVAL_FP16:-1}"
 PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
@@ -78,6 +84,18 @@ fi
 if [ -n "${PART_RERANK_TOPK_V2I}" ]; then
   EXTRA_ARGS+=(--part_rerank_topk_v2i "${PART_RERANK_TOPK_V2I}")
 fi
+if [ -n "${RECIPROCAL_TOPK_I2V}" ]; then
+  EXTRA_ARGS+=(--reciprocal_topk_i2v "${RECIPROCAL_TOPK_I2V}")
+fi
+if [ -n "${RECIPROCAL_TOPK_V2I}" ]; then
+  EXTRA_ARGS+=(--reciprocal_topk_v2i "${RECIPROCAL_TOPK_V2I}")
+fi
+if [ -n "${RECIPROCAL_WEIGHT_I2V}" ]; then
+  EXTRA_ARGS+=(--reciprocal_weight_i2v "${RECIPROCAL_WEIGHT_I2V}")
+fi
+if [ -n "${RECIPROCAL_WEIGHT_V2I}" ]; then
+  EXTRA_ARGS+=(--reciprocal_weight_v2i "${RECIPROCAL_WEIGHT_V2I}")
+fi
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
@@ -110,6 +128,8 @@ python test_m3reid.py \
   --part_rerank_topk "${PART_RERANK_TOPK}" \
   --part_rerank_weight "${PART_RERANK_WEIGHT}" \
   --part_rerank_norm "${PART_RERANK_NORM}" \
+  --reciprocal_topk "${RECIPROCAL_TOPK}" \
+  --reciprocal_weight "${RECIPROCAL_WEIGHT}" \
   --eval_sample_mode all \
   --desc "${DESC}" \
   --gpu "${GPU}" \

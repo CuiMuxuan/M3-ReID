@@ -159,6 +159,16 @@ def resolve_part_rerank_topk(args, direction):
     return args.part_rerank_topk if direction_topk is None else direction_topk
 
 
+def resolve_reciprocal_weight(args, direction):
+    direction_weight = getattr(args, f'reciprocal_weight_{direction}', None)
+    return args.reciprocal_weight if direction_weight is None else direction_weight
+
+
+def resolve_reciprocal_topk(args, direction):
+    direction_topk = getattr(args, f'reciprocal_topk_{direction}', None)
+    return args.reciprocal_topk if direction_topk is None else direction_topk
+
+
 def normalize_candidate_scores(scores, mode):
     if mode == 'none':
         return scores
@@ -189,11 +199,36 @@ def apply_topk_part_rerank(similarity, part_similarity, topk, weight, norm_mode)
     return reranked
 
 
+def apply_topk_reciprocal_boost(similarity, topk, weight):
+    if topk <= 0 or weight <= 0:
+        return similarity
+
+    row_k = min(int(topk), similarity.size(1))
+    col_k = min(int(topk), similarity.size(0))
+    if row_k <= 0 or col_k <= 0:
+        return similarity
+
+    row_top = torch.topk(similarity, k=row_k, dim=1, largest=True, sorted=False).indices
+    col_top = torch.topk(similarity, k=col_k, dim=0, largest=True, sorted=False).indices
+    gallery_indices = torch.arange(similarity.size(1), device=similarity.device).unsqueeze(0).expand_as(col_top)
+
+    reciprocal_mask = torch.zeros_like(similarity, dtype=torch.bool)
+    reciprocal_mask[col_top, gallery_indices] = True
+    row_reciprocal = reciprocal_mask.gather(1, row_top).to(similarity.dtype)
+
+    reranked = similarity.clone()
+    reranked.scatter_(1, row_top, similarity.gather(1, row_top) + weight * row_reciprocal)
+    return reranked
+
+
 def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_dim,
-                            part_match_weight=None, part_rerank_weight=None, part_rerank_topk=None):
+                            part_match_weight=None, part_rerank_weight=None, part_rerank_topk=None,
+                            reciprocal_weight=None, reciprocal_topk=None):
     match_weight = args.part_match_weight if part_match_weight is None else part_match_weight
     rerank_weight = args.part_rerank_weight if part_rerank_weight is None else part_rerank_weight
     rerank_topk = args.part_rerank_topk if part_rerank_topk is None else part_rerank_topk
+    mutual_weight = args.reciprocal_weight if reciprocal_weight is None else reciprocal_weight
+    mutual_topk = args.reciprocal_topk if reciprocal_topk is None else reciprocal_topk
     similarity = torch.matmul(query_embeddings, gallery_embeddings.t())
     if match_weight > 0 or rerank_weight > 0:
         part_similarity = compute_part_match_similarity(
@@ -209,6 +244,8 @@ def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_d
 
     if match_weight > 0:
         similarity = similarity + match_weight * part_similarity
+    if mutual_weight > 0:
+        similarity = apply_topk_reciprocal_boost(similarity, mutual_topk, mutual_weight)
     if rerank_weight > 0:
         similarity = apply_topk_part_rerank(
             similarity, part_similarity, rerank_topk,
@@ -296,6 +333,18 @@ if __name__ == '__main__':
                         help='Optional Scheme M part-rerank weight override for v2i evaluation')
     parser.add_argument('--part_rerank_norm', default='zscore', choices=['none', 'center', 'zscore'],
                         help='Normalization applied to candidate part scores before Scheme M reranking')
+    parser.add_argument('--reciprocal_topk', default=0, type=int,
+                        help='Scheme N cross-modal mutual-neighbor candidate top-k. Set 0 to disable')
+    parser.add_argument('--reciprocal_topk_i2v', default=None, type=int,
+                        help='Optional Scheme N mutual-neighbor top-k override for i2v evaluation')
+    parser.add_argument('--reciprocal_topk_v2i', default=None, type=int,
+                        help='Optional Scheme N mutual-neighbor top-k override for v2i evaluation')
+    parser.add_argument('--reciprocal_weight', default=0.0, type=float,
+                        help='Scheme N score boost for reciprocal top-k candidates')
+    parser.add_argument('--reciprocal_weight_i2v', default=None, type=float,
+                        help='Optional Scheme N reciprocal boost weight override for i2v evaluation')
+    parser.add_argument('--reciprocal_weight_v2i', default=None, type=float,
+                        help='Optional Scheme N reciprocal boost weight override for v2i evaluation')
     parser.add_argument('--grad_checkpoint_head', action='store_true', default=False,
                         help='Accepted for architecture parity; checkpointing is only active during training')
     parser.add_argument('--gpu', default=0, type=int, help='GPU device ids for CUDA_VISIBLE_DEVICES')
@@ -341,6 +390,10 @@ if __name__ == '__main__':
     v2i_part_rerank_weight = resolve_part_rerank_weight(args, 'v2i')
     i2v_part_rerank_topk = resolve_part_rerank_topk(args, 'i2v')
     v2i_part_rerank_topk = resolve_part_rerank_topk(args, 'v2i')
+    i2v_reciprocal_weight = resolve_reciprocal_weight(args, 'i2v')
+    v2i_reciprocal_weight = resolve_reciprocal_weight(args, 'v2i')
+    i2v_reciprocal_topk = resolve_reciprocal_topk(args, 'i2v')
+    v2i_reciprocal_topk = resolve_reciprocal_topk(args, 'v2i')
     print(f'SchemeL part matching: weight={args.part_match_weight}, '
           f'i2v_weight={i2v_part_match_weight}, v2i_weight={v2i_part_match_weight}, '
           f'neighbor_radius={args.part_match_neighbor_radius}, symmetric={args.part_match_symmetric}')
@@ -349,6 +402,10 @@ if __name__ == '__main__':
           f'weight={args.part_rerank_weight}, '
           f'i2v_weight={i2v_part_rerank_weight}, v2i_weight={v2i_part_rerank_weight}, '
           f'norm={args.part_rerank_norm}')
+    print(f'SchemeN reciprocal boost: topk={args.reciprocal_topk}, '
+          f'i2v_topk={i2v_reciprocal_topk}, v2i_topk={v2i_reciprocal_topk}, '
+          f'weight={args.reciprocal_weight}, '
+          f'i2v_weight={i2v_reciprocal_weight}, v2i_weight={v2i_reciprocal_weight}')
 
     # -- DataManager ---------------------------------------------------------------------------------------------------
     if args.dataset == 'HITSZVCM':
@@ -443,6 +500,8 @@ if __name__ == '__main__':
             part_match_weight=i2v_part_match_weight,
             part_rerank_weight=i2v_part_rerank_weight,
             part_rerank_topk=i2v_part_rerank_topk,
+            reciprocal_weight=i2v_reciprocal_weight,
+            reciprocal_topk=i2v_reciprocal_topk,
         )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices, q_pids, q_cids, g_pids, g_cids)
@@ -457,6 +516,8 @@ if __name__ == '__main__':
                 part_match_weight=v2i_part_match_weight,
                 part_rerank_weight=v2i_part_rerank_weight,
                 part_rerank_topk=v2i_part_rerank_topk,
+                reciprocal_weight=v2i_reciprocal_weight,
+                reciprocal_topk=v2i_reciprocal_topk,
             )
         else:
             v2i_dist_mat = i2v_dist_mat.t()
@@ -472,6 +533,8 @@ if __name__ == '__main__':
             part_match_weight=i2v_part_match_weight,
             part_rerank_weight=i2v_part_rerank_weight,
             part_rerank_topk=i2v_part_rerank_topk,
+            reciprocal_weight=i2v_reciprocal_weight,
+            reciprocal_topk=i2v_reciprocal_topk,
         )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices,
@@ -485,6 +548,8 @@ if __name__ == '__main__':
             part_match_weight=v2i_part_match_weight,
             part_rerank_weight=v2i_part_rerank_weight,
             part_rerank_topk=v2i_part_rerank_topk,
+            reciprocal_weight=v2i_reciprocal_weight,
+            reciprocal_topk=v2i_reciprocal_topk,
         )
         v2i_sorted_indices = torch.argsort(v2i_dist_mat, dim=1)
         v2i_cmc, v2i_mAP, v2i_mINP = get_cmc_mAP_mINP(v2i_sorted_indices,
