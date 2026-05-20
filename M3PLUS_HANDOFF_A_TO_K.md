@@ -541,6 +541,21 @@ If reciprocal boost improves both directions or moves one direction by >=0.2 wit
 If it hurts either direction by >=0.1, stop Scheme N or set the hurting direction's reciprocal weight to 0.
 ```
 
+Observed default result:
+
+```text
+SchemeN, Base=SchemeM direction-specific top-k, RECIPROCAL_TOPK=20, weights 0.010/0.010
+i2v 75.22 / mAP 62.74 / mINP 35.85
+v2i 78.72 / mAP 65.69 / mINP 35.96
+```
+
+Interpretation:
+
+- Compared with SchemeM direction-specific top-k `74.87 / 78.49`, Scheme N adds `+0.35` i2v and `+0.23` v2i.
+- Compared with Dv1 + SchemeH `74.67 / 78.15`, the total gain is `+0.55` i2v and `+0.57` v2i.
+- Remaining HITSZ-VCM gap to target is now only `i2v -0.36`, `v2i -0.28`.
+- This is the strongest route so far. Continue a narrow reciprocal-weight sweep around `RECIPROCAL_TOPK=20`, not broader part-rerank sweeps.
+
 ## SchemeH Evaluation Template
 
 Best Dv1 multi-clip evaluation:
