@@ -475,6 +475,33 @@ Interpretation:
 - This is the first post-SchemeH route that improves both directions without retraining, so continue a narrow Scheme M sweep.
 - Remaining HITSZ-VCM gap to target is `i2v -0.73`, `v2i -0.53`.
 
+Partial sweep results:
+
+| Config | i2v R1 | i2v mAP | i2v mINP | v2i R1 | v2i mAP | v2i mINP | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| top20 / i2v0.015 / v2i0.015 | 74.85 | 62.46 | 35.79 | 78.47 | 65.32 | 35.64 | Default Scheme M |
+| top10 / i2v0.015 / v2i0.015 | 74.87 | 62.38 | 35.62 | 78.37 | 65.17 | 35.27 | Slight i2v R1 gain, worse v2i and mAP |
+| top20 / i2v0.010 / v2i0.015 | 74.85 | 62.52 | 35.88 | 78.47 | 65.32 | 35.64 | Same R1 as default, better i2v mAP/mINP |
+| top20 / i2v0.020 / v2i0.015 | 74.85 | 62.38 | 35.62 | 78.47 | 65.32 | 35.64 | Same R1, worse i2v mAP/mINP |
+| top20 / i2v0.015 / v2i0.020 | 74.85 | 62.46 | 35.79 | 78.27 | 65.24 | 35.55 | Higher v2i weight hurts v2i R1 |
+| top30 / i2v0.015 / v2i0.015 | 74.78 | 62.50 | 35.89 | 78.49 | 65.36 | 35.70 | Best v2i, weaker i2v |
+
+Current best Scheme M setting:
+
+```text
+Rank-1 tie: top20 / PART_RERANK_WEIGHT_I2V=0.010 or 0.015 / PART_RERANK_WEIGHT_V2I=0.015
+Prefer top20 / i2v0.010 / v2i0.015 for now because i2v mAP and mINP are slightly better.
+```
+
+Next Scheme M refinement:
+
+```text
+Top-k sensitivity is directional:
+- i2v R1 peaks at top10 / i2v0.015.
+- v2i R1 peaks at top30 / v2i0.015.
+Add direction-specific top-k and test i2v_topk=10, v2i_topk=30 with rerank weights 0.015/0.015.
+```
+
 ## SchemeH Evaluation Template
 
 Best Dv1 multi-clip evaluation:

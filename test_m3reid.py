@@ -154,6 +154,11 @@ def resolve_part_rerank_weight(args, direction):
     return args.part_rerank_weight if direction_weight is None else direction_weight
 
 
+def resolve_part_rerank_topk(args, direction):
+    direction_topk = getattr(args, f'part_rerank_topk_{direction}', None)
+    return args.part_rerank_topk if direction_topk is None else direction_topk
+
+
 def normalize_candidate_scores(scores, mode):
     if mode == 'none':
         return scores
@@ -185,9 +190,10 @@ def apply_topk_part_rerank(similarity, part_similarity, topk, weight, norm_mode)
 
 
 def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_dim,
-                            part_match_weight=None, part_rerank_weight=None):
+                            part_match_weight=None, part_rerank_weight=None, part_rerank_topk=None):
     match_weight = args.part_match_weight if part_match_weight is None else part_match_weight
     rerank_weight = args.part_rerank_weight if part_rerank_weight is None else part_rerank_weight
+    rerank_topk = args.part_rerank_topk if part_rerank_topk is None else part_rerank_topk
     similarity = torch.matmul(query_embeddings, gallery_embeddings.t())
     if match_weight > 0 or rerank_weight > 0:
         part_similarity = compute_part_match_similarity(
@@ -205,7 +211,7 @@ def compute_distance_matrix(query_embeddings, gallery_embeddings, args, global_d
         similarity = similarity + match_weight * part_similarity
     if rerank_weight > 0:
         similarity = apply_topk_part_rerank(
-            similarity, part_similarity, args.part_rerank_topk,
+            similarity, part_similarity, rerank_topk,
             rerank_weight, args.part_rerank_norm
         )
     return -similarity
@@ -278,6 +284,10 @@ if __name__ == '__main__':
                         help='Average query-to-gallery and gallery-to-query local-window part scores')
     parser.add_argument('--part_rerank_topk', default=0, type=int,
                         help='Scheme M top-k candidate count for local part reranking. Set 0 to disable')
+    parser.add_argument('--part_rerank_topk_i2v', default=None, type=int,
+                        help='Optional Scheme M top-k override for i2v evaluation')
+    parser.add_argument('--part_rerank_topk_v2i', default=None, type=int,
+                        help='Optional Scheme M top-k override for v2i evaluation')
     parser.add_argument('--part_rerank_weight', default=0.0, type=float,
                         help='Scheme M local part rerank weight applied inside top-k candidates')
     parser.add_argument('--part_rerank_weight_i2v', default=None, type=float,
@@ -329,10 +339,14 @@ if __name__ == '__main__':
     v2i_part_match_weight = resolve_part_match_weight(args, 'v2i')
     i2v_part_rerank_weight = resolve_part_rerank_weight(args, 'i2v')
     v2i_part_rerank_weight = resolve_part_rerank_weight(args, 'v2i')
+    i2v_part_rerank_topk = resolve_part_rerank_topk(args, 'i2v')
+    v2i_part_rerank_topk = resolve_part_rerank_topk(args, 'v2i')
     print(f'SchemeL part matching: weight={args.part_match_weight}, '
           f'i2v_weight={i2v_part_match_weight}, v2i_weight={v2i_part_match_weight}, '
           f'neighbor_radius={args.part_match_neighbor_radius}, symmetric={args.part_match_symmetric}')
-    print(f'SchemeM part rerank: topk={args.part_rerank_topk}, weight={args.part_rerank_weight}, '
+    print(f'SchemeM part rerank: topk={args.part_rerank_topk}, '
+          f'i2v_topk={i2v_part_rerank_topk}, v2i_topk={v2i_part_rerank_topk}, '
+          f'weight={args.part_rerank_weight}, '
           f'i2v_weight={i2v_part_rerank_weight}, v2i_weight={v2i_part_rerank_weight}, '
           f'norm={args.part_rerank_norm}')
 
@@ -428,18 +442,21 @@ if __name__ == '__main__':
             query_embeddings, gallery_embeddings, args, global_embedding_dim,
             part_match_weight=i2v_part_match_weight,
             part_rerank_weight=i2v_part_rerank_weight,
+            part_rerank_topk=i2v_part_rerank_topk,
         )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices, q_pids, q_cids, g_pids, g_cids)
         same_local_scoring = (v2i_part_match_weight == i2v_part_match_weight
                               and i2v_part_rerank_weight == 0
                               and v2i_part_rerank_weight == 0
+                              and i2v_part_rerank_topk == v2i_part_rerank_topk
                               and args.part_match_symmetric)
         if not same_local_scoring:
             v2i_dist_mat = compute_distance_matrix(
                 gallery_embeddings, query_embeddings, args, global_embedding_dim,
                 part_match_weight=v2i_part_match_weight,
                 part_rerank_weight=v2i_part_rerank_weight,
+                part_rerank_topk=v2i_part_rerank_topk,
             )
         else:
             v2i_dist_mat = i2v_dist_mat.t()
@@ -454,6 +471,7 @@ if __name__ == '__main__':
             i2v_query_embeddings, i2v_gallery_embeddings, args, global_embedding_dim,
             part_match_weight=i2v_part_match_weight,
             part_rerank_weight=i2v_part_rerank_weight,
+            part_rerank_topk=i2v_part_rerank_topk,
         )
         i2v_sorted_indices = torch.argsort(i2v_dist_mat, dim=1)
         i2v_cmc, i2v_mAP, i2v_mINP = get_cmc_mAP_mINP(i2v_sorted_indices,
@@ -466,6 +484,7 @@ if __name__ == '__main__':
             v2i_query_embeddings, v2i_gallery_embeddings, args, global_embedding_dim,
             part_match_weight=v2i_part_match_weight,
             part_rerank_weight=v2i_part_rerank_weight,
+            part_rerank_topk=v2i_part_rerank_topk,
         )
         v2i_sorted_indices = torch.argsort(v2i_dist_mat, dim=1)
         v2i_cmc, v2i_mAP, v2i_mINP = get_cmc_mAP_mINP(v2i_sorted_indices,
