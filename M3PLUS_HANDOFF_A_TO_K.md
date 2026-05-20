@@ -556,6 +556,24 @@ Interpretation:
 - Remaining HITSZ-VCM gap to target is now only `i2v -0.36`, `v2i -0.28`.
 - This is the strongest route so far. Continue a narrow reciprocal-weight sweep around `RECIPROCAL_TOPK=20`, not broader part-rerank sweeps.
 
+Narrow reciprocal-weight sweep:
+
+| Config | i2v R1 | i2v mAP | i2v mINP | v2i R1 | v2i mAP | v2i mINP | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| rk20 / i2v0.010 / v2i0.010 | 75.22 | 62.74 | 35.85 | 78.72 | 65.69 | 35.96 | Default Scheme N |
+| rk20 / i2v0.012 / v2i0.012 | 75.33 | 62.81 | 35.88 | 78.84 | 65.75 | 36.02 | Improves both directions |
+| rk20 / i2v0.015 / v2i0.010 | 75.39 | 62.90 | 35.93 | 78.72 | 65.69 | 35.96 | Best i2v so far |
+| rk20 / i2v0.010 / v2i0.015 | 75.22 | 62.74 | 35.85 | 78.94 | 65.82 | 36.08 | Best v2i so far |
+
+Next priority:
+
+```text
+Run rk20 / i2v0.015 / v2i0.015 first.
+Because i2v and v2i reciprocal weights are direction-specific, this should combine the current best directional values.
+If it matches expectations, remaining gap should be about i2v -0.19 / v2i -0.06.
+Then test slightly stronger i2v weights, e.g. 0.018 or 0.020, with v2i fixed at 0.015.
+```
+
 ## SchemeH Evaluation Template
 
 Best Dv1 multi-clip evaluation:
