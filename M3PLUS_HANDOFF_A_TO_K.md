@@ -567,18 +567,22 @@ Narrow reciprocal-weight sweep:
 | rk20 / i2v0.015 / v2i0.015 | 75.39 | 62.90 | 35.93 | 78.94 | 65.82 | 36.08 | Current best, combines both directions |
 | rk20 / i2v0.018 / v2i0.015 | 75.55 | 62.99 | 35.97 | 78.94 | 65.82 | 36.08 | i2v nearly reaches target |
 | rk20 / i2v0.020 / v2i0.015 | 75.57 | 63.04 | 36.01 | 78.94 | 65.82 | 36.08 | Current best, i2v short by 0.01 |
+| rk20 / i2v0.022 / v2i0.015 | 75.59 | 63.08 | 36.02 | 78.94 | 65.82 | 36.08 | i2v reaches target |
+| rk20 / i2v0.025 / v2i0.015 | 75.70 | 63.13 | 36.03 | 78.94 | 65.82 | 36.09 | Best i2v so far |
+| rk20 / i2v0.020 / v2i0.018 | 75.57 | 63.04 | 36.01 | 78.96 | 65.88 | 36.13 | Best v2i so far, i2v short by 0.01 |
+| rk20 / i2v0.022 / v2i0.018 | 75.59 | 63.08 | 36.02 | 78.96 | 65.88 | 36.12 | Best balanced near-target setting |
 
 Next priority:
 
 ```text
-Current best is rk20 / i2v0.020 / v2i0.015.
-Remaining gap is i2v -0.01 / v2i -0.06.
-Do not increase v2i weight first; v2i is already close to target.
-Test final small reciprocal changes:
-- i2v0.022 / v2i0.015
-- i2v0.025 / v2i0.015
-- i2v0.020 / v2i0.018
-- i2v0.022 / v2i0.018
+Current best balanced setting is rk20 / i2v0.022 / v2i0.018.
+It reaches i2v target and leaves v2i short by 0.04.
+Best i2v-only setting is rk20 / i2v0.025 / v2i0.015 at 75.70 / 78.94.
+Next, only increase v2i reciprocal weight while keeping i2v above target:
+- i2v0.022 / v2i0.020
+- i2v0.025 / v2i0.020
+- i2v0.022 / v2i0.022
+- i2v0.025 / v2i0.022
 ```
 
 ## SchemeH Evaluation Template
