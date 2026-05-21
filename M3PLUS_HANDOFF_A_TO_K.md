@@ -22,6 +22,15 @@ Not counted: SchemeM/N re-ranking, reciprocal boost, part-score reranking, or ot
 Separate reporting only: SchemeH multi-clip, because it is an inference sampling strategy rather than model innovation.
 ```
 
+BoT exclusion rule:
+
+```text
+The paper "Bag of Tricks and A Strong Baseline for Deep Person Re-identification" is now an explicit exclusion list.
+Do not use or claim gains from its trick set: warmup learning rate, random erasing, label smoothing, last-stride changes, BNNeck as a new contribution, center loss, image-size/batch-size tuning, or other baseline/training-trick changes from that paper.
+Allowed direction: model/module innovation only, with direct single-clip evaluation and no post-hoc score changes.
+Implementation guardrails: label smoothing defaults to 0.0, M3Plus extra augmentation defaults to none, and RandomErasing is disabled by default in train_m3reid.py.
+```
+
 Current best HITSZ-VCM model-only result:
 
 ```text

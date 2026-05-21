@@ -1,5 +1,7 @@
 # M3Plus Long-Term Execution Plan
 
+> Superseded constraint: the project now accepts model/module innovation only. Do not use BoT-style training tricks from "Bag of Tricks and A Strong Baseline for Deep Person Re-identification" as gain sources, including warmup LR, random erasing, label smoothing, last-stride changes, BNNeck as a new contribution, center loss, or image-size/batch-size tuning. Older rows in this file that mention those tricks are historical notes, not active instructions.
+
 ## Goal
 
 Use the 10-frame task as the main track and improve both BUPTCampus and HITSZ-VCM over the provided M3-ReID baseline logs by at least 2 percentage points.
@@ -24,7 +26,7 @@ We will run one controlled scheme at a time. Each scheme must report the same fo
 
 | Scheme | Status | Core Change | Training Delta | Why It Is Tested |
 | --- | --- | --- | --- | --- |
-| A | ready to run | Baseline MVL + local part branch only + cross-modality batch-hard triplet | `--use_m3plus --m3plus_mode part_only --m3plus_aug_strength none --triplet_weight 0.35 --triplet_frame_weight 0.10 --id_label_smoothing 0.05` | Isolate the most common ReID gain source, local part descriptors, without the full M3Plus fusion and extra augmentation noise. |
+| A | historical | Baseline MVL + local part branch only + cross-modality batch-hard triplet | `--use_m3plus --m3plus_mode part_only --m3plus_aug_strength none --triplet_weight 0.35 --triplet_frame_weight 0.10 --id_label_smoothing 0.0` | Historical row only; BoT-style smoothing is not allowed. |
 | B | queued | Baseline checkpoint warm start with a zero-init local residual branch | resume best baseline, lower LR, 30-60 epoch fine-tune | Preserve the original strong global representation while adding local part cues without changing the baseline embedding shape. |
 | C | queued | Loss-level change: supervised contrastive or Circle-style metric head | keep model close to Scheme A, replace or down-weight current triplet | Test whether stronger metric geometry gives Rank-1 gains without adding more inference cost. |
 | D | ready to run | Baseline-preserving dual global/local fusion | warm-start baseline, freeze global branch for 5 epochs, train local part branch with its own ID + triplet losses, then fine-tune with weighted late fusion | Prevent the part branch from overwhelming MVL features while still giving it direct learning signal; main route after Scheme B stayed below baseline. |
@@ -97,7 +99,7 @@ Implementation switches:
 --part_dim 2048
 --triplet_weight 0.35
 --triplet_frame_weight 0.10
---id_label_smoothing 0.05
+--id_label_smoothing 0.0
 ```
 
 New server scripts:
@@ -132,7 +134,7 @@ Result row to fill after each run:
 
 ## Scheme B: Baseline Warm-Start Local Residual Fine-Tune
 
-Scheme B starts from the server baseline `model_best.pth`, then adds a local part residual branch with a smaller learning rate and short milestone schedule. The local residual projection is zero-initialized and keeps the embedding dimension unchanged, so the baseline backbone, MVL, BNNeck, and classifiers can load without shape resets. This is the safer next step after Scheme A underperformed from scratch.
+Scheme B starts from the server baseline `model_best.pth`, then adds a local part residual branch with a smaller learning rate and short milestone schedule. The local residual projection is zero-initialized and keeps the embedding dimension unchanged, so the baseline backbone, MVL, and classifiers can load without shape resets. This is the safer next step after Scheme A underperformed from scratch.
 
 Reference checkpoint location on the server:
 
@@ -226,7 +228,7 @@ Implementation switches:
 --part_id_weight 0.50
 --part_triplet_weight 0.35
 --part_mma_weight 0.05
---id_label_smoothing 0.05
+--id_label_smoothing 0.0
 --lr_milestones 40,60
 EPOCHS=80
 ```
@@ -291,8 +293,8 @@ Additional Scheme D changes:
 
 | Area | File | Change |
 | --- | --- | --- |
-| Model | `models/model_m3reid.py` | Added `dual_fusion` mode, a separately supervised local BNNeck/classifier, base-branch freeze helper, and weighted global/local inference feature concatenation. |
-| Entry | `train_m3reid.py` | Added Scheme D local loss weights, part LR multiplier, base freeze warmup, fusion alpha, and output-dimension-safe validation. |
+| Model | `models/model_m3reid.py` | Added `dual_fusion` mode, a separately supervised local branch, base-branch freeze helper, and weighted global/local inference feature concatenation. |
+| Entry | `train_m3reid.py` | Added Scheme D local loss weights, part LR multiplier, base freeze phase, fusion alpha, and output-dimension-safe validation. |
 | Entry | `test_m3reid.py` | Added `dual_fusion` and `--fusion_alpha` support for alpha sweeps. |
 | Scripts | `run_scheme_d_t10_hitszvcm_v100.sh`, `run_scheme_d_t10_buptcampus_v100.sh` | Added V100 run scripts for warm-start dual-fusion fine-tuning. |
 
@@ -492,7 +494,7 @@ Try these changes in order, one at a time:
 | ---: | --- | --- | --- |
 | 1 | Stronger hard metric term | `--triplet_weight 0.75` | Better Rank-1 from harder cross-modal separation. |
 | 2 | More frame-level hard mining | `--triplet_frame_weight 0.5` | Helps short/local motion cues, especially BUPTCampus. |
-| 3 | Slightly smoother ID loss | `--id_label_smoothing 0.15` | Reduces overfitting visible/infrared style artifacts. |
+| 3 | Deprecated under BoT exclusion | `--id_label_smoothing 0.0` | Do not use smoothing as a gain source. |
 | 4 | More identities per batch if memory allows | `--p_num 6 --k_num 8` | More hard negatives and positives per step. |
 | 5 | Conservative augmentation | keep `--use_m3plus`, reduce occlusion probabilities in `data/transform.py` by 0.1 | Use if mAP drops while Rank-1 rises. |
 

@@ -195,9 +195,11 @@ if __name__ == '__main__':
                                  'supervised_dual_fusion', 'gated_residual_fusion',
                                  'part_token_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
-    parser.add_argument('--m3plus_aug_strength', default='standard',
+    parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
                         help='Strength of extra M3Plus low-light and block-occlusion augmentation')
+    parser.add_argument('--disable_random_erasing', action=argparse.BooleanOptionalAction, default=True,
+                        help='Disable RandomErasing augmentation for experiments that must exclude BoT-style tricks.')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,
                         help='Output dimension of the M3Plus local part branch')
@@ -346,6 +348,7 @@ if __name__ == '__main__':
 
     # -- Dataset & Dataloader ------------------------------------------------------------------------------------------
     normalize = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    random_erasing = [] if args.disable_random_erasing else [T.RandomErasing()]
 
     if args.use_m3plus:
         aug_probs = get_m3plus_aug_probs(args.m3plus_aug_strength)
@@ -359,7 +362,7 @@ if __name__ == '__main__':
             T.ToTensor(),
             RandomBlockOcclusion(p=aug_probs['ir_occlusion']),
             normalize,
-            T.RandomErasing(),
+            *random_erasing,
             StyleVariation(mode='one', p=1.0),
         ]))
         transform_train_rgb = SyncTrackTransform(T.Compose([
@@ -372,7 +375,7 @@ if __name__ == '__main__':
             T.ToTensor(),
             RandomBlockOcclusion(p=aug_probs['rgb_occlusion']),
             normalize,
-            T.RandomErasing(),
+            *random_erasing,
             StyleVariation(mode='all', p=1.0),
         ]))
     else:
@@ -383,7 +386,7 @@ if __name__ == '__main__':
             T.RandomHorizontalFlip(),
             T.ToTensor(),
             normalize,
-            T.RandomErasing(),
+            *random_erasing,
             StyleVariation(mode='one', p=1.0),
         ]))
         transform_train_rgb = SyncTrackTransform(T.Compose([
@@ -394,7 +397,7 @@ if __name__ == '__main__':
             T.RandomHorizontalFlip(),
             T.ToTensor(),
             normalize,
-            T.RandomErasing(),
+            *random_erasing,
             StyleVariation(mode='all', p=1.0),
         ]))
     transform_train = (transform_train_ir, transform_train_rgb)
@@ -462,7 +465,7 @@ if __name__ == '__main__':
     # Loss -------------------------------------------------------------------------------------------------------------
     label_smoothing = args.id_label_smoothing
     if label_smoothing is None:
-        label_smoothing = 0.1 if args.use_m3plus else 0.0
+        label_smoothing = 0.0
     criterion_ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing).cuda()
     criterion_mma_loss = MultiModalityAlignmentLoss().cuda()
     criterion_triplet_loss = CrossModalityBatchHardTripletLoss(margin=args.triplet_margin).cuda()
@@ -521,6 +524,7 @@ if __name__ == '__main__':
     print(f'Effective setting: sample_seq_num={sample_seq_num}, use_m3plus={args.use_m3plus}, '
           f'm3plus_mode={args.m3plus_mode}, '
           f'sample_method={sample_method}, label_smoothing={label_smoothing:.3f}, '
+          f'disable_random_erasing={args.disable_random_erasing}, '
           f'enable_triplet_loss={enable_triplet_loss}, accum_steps={args.accum_steps}, '
           f'train_batch_size={train_batch_size}, test_batch_size={test_batch_size}, '
           f'fp16={args.fp16}, eval_fp16={args.eval_fp16}, '
