@@ -43,10 +43,14 @@ DESC="${DESC:-SchemeD_dualfusion_t10_buptcampus_v100_bs$((P_NUM * K_NUM))}"
 PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
+DROP_CLASSIFIER_ON_RESUME="${DROP_CLASSIFIER_ON_RESUME:-0}"
 
 EXTRA_ARGS=()
 if [ "${GRAD_CHECKPOINT_HEAD}" = "1" ]; then
   EXTRA_ARGS+=(--grad_checkpoint_head)
+fi
+if [ "${DROP_CLASSIFIER_ON_RESUME}" = "1" ]; then
+  EXTRA_ARGS+=(--drop_classifier_on_resume)
 fi
 if [ "${PERSISTENT_WORKERS}" = "1" ]; then
   EXTRA_ARGS+=(--persistent_workers)

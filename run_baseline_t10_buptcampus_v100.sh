@@ -22,6 +22,7 @@ PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
 LR_MILESTONES="${LR_MILESTONES:-80,120}"
 RESUME="${RESUME:-}"
+DROP_CLASSIFIER_ON_RESUME="${DROP_CLASSIFIER_ON_RESUME:-0}"
 
 EXTRA_ARGS=()
 if [ -n "${RESUME}" ]; then
@@ -30,6 +31,9 @@ if [ -n "${RESUME}" ]; then
     exit 1
   fi
   EXTRA_ARGS+=(--resume "${RESUME}")
+  if [ "${DROP_CLASSIFIER_ON_RESUME}" = "1" ]; then
+    EXTRA_ARGS+=(--drop_classifier_on_resume)
+  fi
 fi
 if [ "${PERSISTENT_WORKERS}" = "1" ]; then
   EXTRA_ARGS+=(--persistent_workers)

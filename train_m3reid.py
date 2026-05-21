@@ -185,6 +185,8 @@ if __name__ == '__main__':
     parser.add_argument('--cudnn_benchmark', action=argparse.BooleanOptionalAction, default=False,
                         help='Enable cuDNN benchmark for fixed image sizes')
     parser.add_argument('--resume', default=None, type=str, help='Resume from path of checkpoint')
+    parser.add_argument('--drop_classifier_on_resume', action='store_true', default=False,
+                        help='Drop ID classifier heads from a resumed state_dict. Useful when dataset relabel order changed.')
     parser.add_argument('--use_m3plus', action='store_true', default=False,
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
     parser.add_argument('--m3plus_mode', default='full',
@@ -427,6 +429,12 @@ if __name__ == '__main__':
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=torch.device('cuda'))
+        dropped_classifier_keys = []
+        if args.drop_classifier_on_resume:
+            for key in list(checkpoint.keys()):
+                if 'classifier' in key:
+                    dropped_classifier_keys.append(key)
+                    checkpoint.pop(key)
         removed_mismatch_keys = []
         for key in list(checkpoint.keys()):
             model_state_dict = model.state_dict()
@@ -438,9 +446,12 @@ if __name__ == '__main__':
         load_result = model.load_state_dict(checkpoint, strict=False)
         print(f'Loaded checkpoint: {args.resume}')
         print(f'Checkpoint load summary: loaded_keys={len(checkpoint)}, '
+              f'dropped_classifier_keys={len(dropped_classifier_keys)}, '
               f'removed_mismatch_keys={len(removed_mismatch_keys)}, '
               f'missing_keys={len(load_result.missing_keys)}, '
               f'unexpected_keys={len(load_result.unexpected_keys)}')
+        if dropped_classifier_keys:
+            print(f'Dropped classifier keys preview: {dropped_classifier_keys[:12]}')
         if removed_mismatch_keys:
             print(f'Removed mismatch keys preview: {removed_mismatch_keys[:12]}')
         if load_result.missing_keys:

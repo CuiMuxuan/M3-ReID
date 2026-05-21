@@ -299,7 +299,7 @@ class HITSZVCMDataManager:
 
         assert mode in ['train', 'test']
         num_tracks = track_meta_data.shape[0]
-        pid_list = list(set(track_meta_data[:, 3].tolist()))
+        pid_list = sorted(set(track_meta_data[:, 3].tolist()))
         num_pids = len(pid_list)  # Num 500
         if relabel: pid2label = {pid: label for label, pid in enumerate(pid_list)}
 
@@ -586,7 +586,7 @@ class BUPTCampusDataManager:
                     cids.append(cid)
                     mids.append(mid)
         tracks = [[os.path.join(self.dataset_data_dir, t) for t in ts] for ts in tracks]
-        if relabel: pid2label = {pid: label for label, pid in enumerate(set(pids))}
+        if relabel: pid2label = {pid: label for label, pid in enumerate(sorted(set(pids)))}
         pids = [pid2label[p] if relabel else int(p) for p in pids]
         cam2cid = {'LS3': 0, 'G25': 1, 'CQ1': 2, 'W4': 3, 'TSG1': 4, 'TSG2': 5}
         cids = [cam2cid[c] for c in cids]
