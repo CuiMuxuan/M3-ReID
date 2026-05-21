@@ -112,6 +112,7 @@ def build_train_params(args, model):
     part_prefixes = (
         'part_aggregation', 'part_bn_neck', 'part_classifier',
         'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
+        'gated_residual_fusion', 'part_token_fusion',
     )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
@@ -188,7 +189,9 @@ if __name__ == '__main__':
                         help='Enable enhanced M3-ReID with multi-scale, local part, attention, hard triplet, and robust augmentation')
     parser.add_argument('--m3plus_mode', default='full',
                         choices=['full', 'part_only', 'local_residual', 'dual_fusion',
-                                 'temporal_dual_fusion', 'adaptive_dual_fusion'],
+                                 'temporal_dual_fusion', 'adaptive_dual_fusion',
+                                 'supervised_dual_fusion', 'gated_residual_fusion',
+                                 'part_token_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='standard',
                         choices=['standard', 'mild', 'none'],
@@ -474,13 +477,17 @@ if __name__ == '__main__':
             margin=args.cross_proto_margin,
             momentum=args.proto_momentum,
         ).cuda()
-    if args.use_m3plus and args.m3plus_mode in ('dual_fusion', 'adaptive_dual_fusion') and args.part_cross_proto_weight > 0:
+    part_supervision_modes = (
+        'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
+        'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
+    )
+    if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
             num_train_class, args.part_dim,
             margin=args.cross_proto_margin,
             momentum=args.proto_momentum,
         ).cuda()
-    if args.use_m3plus and args.m3plus_mode in ('dual_fusion', 'adaptive_dual_fusion') and args.part_proto_weight > 0:
+    if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_proto_weight > 0:
         criterion_part_proto_loss = PrototypeMemoryLoss(
             num_train_class, args.part_dim,
             temperature=args.proto_temperature,
@@ -560,7 +567,7 @@ if __name__ == '__main__':
 
         # -- Train -----------------------------------------------------------------------------------------------------
         model.train()
-        if args.m3plus_mode in ('dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion'):
+        if args.m3plus_mode in part_supervision_modes:
             base_trainable = epoch >= args.freeze_base_epochs
             model.set_scheme_d_base_trainable(base_trainable)
             if epoch == 0 and not base_trainable:

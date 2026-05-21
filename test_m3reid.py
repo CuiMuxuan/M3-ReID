@@ -290,7 +290,9 @@ if __name__ == '__main__':
                         help='Enable enhanced M3-ReID architecture used by M3Plus checkpoints')
     parser.add_argument('--m3plus_mode', default='full',
                         choices=['full', 'part_only', 'local_residual', 'dual_fusion',
-                                 'temporal_dual_fusion', 'adaptive_dual_fusion'],
+                                 'temporal_dual_fusion', 'adaptive_dual_fusion',
+                                 'supervised_dual_fusion', 'gated_residual_fusion',
+                                 'part_token_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,
@@ -479,7 +481,8 @@ if __name__ == '__main__':
         i2v_part_rerank_weight, v2i_part_rerank_weight,
     )
     if max_local_score_weight > 0:
-        dual_modes = ('dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion')
+        dual_modes = ('dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
+                      'supervised_dual_fusion')
         if not (args.use_m3plus and args.m3plus_mode in dual_modes):
             raise ValueError('Scheme L part matching requires a dual-fusion M3Plus checkpoint.')
         if eval_embedding_dim < global_embedding_dim + args.part_dim:

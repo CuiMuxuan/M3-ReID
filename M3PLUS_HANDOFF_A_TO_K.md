@@ -8,22 +8,41 @@
 - Server GPU: Tesla V100 32GB
 - Workflow: edit locally, manually commit and push to GitHub, pull on server, train in `tmux`
 - Main protocol: 10-frame
-- Goal: improve Rank-1 by 2 points over baseline on both HITSZ-VCM and BUPTCampus
-- HITSZ-VCM target: `i2v 75.58 / v2i 79.00`
+- Current goal: model-side innovation only, no re-ranking contribution counted.
+- Acceptance threshold: improve Rank-1 by at least 1 point over the original baseline in both directions when using single-clip direct similarity evaluation.
+- Innovation requirement: at least one clearly writable model innovation, supported by at least two concrete model modules.
+- HITSZ-VCM model-only target: `i2v 74.58 / v2i 78.00`
+- BUPTCampus model-only target: train a fresh baseline first, then set target to baseline Rank-1 + 1.00 in both directions.
 
-Current best HITSZ-VCM result:
+Target scope:
+
+```text
+Counted: trained model architecture/modules/losses that affect the emitted embedding.
+Not counted: SchemeM/N re-ranking, reciprocal boost, part-score reranking, or other post-hoc score-matrix changes.
+Separate reporting only: SchemeH multi-clip, because it is an inference sampling strategy rather than model innovation.
+```
+
+Current best HITSZ-VCM model-only result:
+
+```text
+SchemeD Dv1 single-clip alpha=0.05
+i2v 74.39 / mAP 61.47 / mINP 34.89
+v2i 77.64 / mAP 64.32 / mINP 34.67
+```
+
+Remaining HITSZ-VCM model-only gap:
+
+```text
+i2v: -0.19
+v2i: -0.36
+```
+
+Best HITSZ-VCM result with re-ranking, kept as a separate non-model-only result:
 
 ```text
 SchemeD Dv1 + SchemeH multi-clip + SchemeM/N direction-aware reranking
 i2v 75.70 / mAP 63.13 / mINP 36.03
 v2i 79.00 / mAP 65.95 / mINP 36.19
-```
-
-Remaining gap on HITSZ-VCM:
-
-```text
-i2v: reached target
-v2i: reached target
 ```
 
 Important checkpoints:
@@ -589,6 +608,105 @@ Compared with Dv1 + SchemeH `74.67 / 78.15`, final SchemeN gain is `+1.03` i2v a
 Compared with original baseline target gap, this closes the needed remaining gap on HITSZ-VCM.
 ```
 
+## Model-Only No-Reranking Stage: Schemes O/P/Q
+
+Reason:
+
+- Current HITSZ final result uses SchemeM/N re-ranking.
+- Project target has been adjusted: only model innovation counts, and the Rank-1 threshold is reduced from +2 to +1.
+- A valid final method must contain at least one writable innovation and at least two model modules.
+- Without re-ranking, the strongest observed result is `SchemeD single-clip alpha=0.05`:
+
+```text
+i2v 74.39 / v2i 77.64
+```
+
+- With SchemeH multi-clip but no re-ranking, the strongest observed result is:
+
+```text
+i2v 74.67 / v2i 78.15
+```
+
+Goal:
+
+```text
+Test whether model-side changes can pass the adjusted +1 model-only target:
+HITSZ i2v >= 74.58 and v2i >= 78.00 under single-clip direct similarity.
+Training-time validation in train_m3reid.py uses single-clip direct similarity, so it is the strict model-only comparison.
+```
+
+Implemented modes:
+
+```text
+Scheme O: m3plus_mode=supervised_dual_fusion
+- Fixed dual_fusion concat stays unchanged at inference.
+- Adds fused concat embedding ID/triplet supervision during training.
+
+Scheme P: m3plus_mode=gated_residual_fusion
+- Injects local part cues into the global embedding through a bounded zero-initialized residual path.
+- Output dimension stays 12288, so evaluation is direct global embedding retrieval.
+
+Scheme Q: m3plus_mode=part_token_fusion
+- Uses the global descriptor as a query over 4 local part tokens.
+- Injects attended local context through a zero-initialized residual projection.
+- Output dimension stays 12288.
+```
+
+Writable innovation candidates:
+
+```text
+Innovation name:
+Reliability-aware local-to-global embedding enhancement for video VI-ReID.
+
+Module 1:
+PartGuidedAggregation extracts softly weighted horizontal body-part descriptors with GeM pooling.
+
+Module 2:
+One of the model-side fusion modules below:
+- Scheme O fused embedding supervision head.
+- Scheme P bounded gated residual local-to-global fusion.
+- Scheme Q part-aware token fusion.
+
+Only claim the final innovation after the corresponding module combination passes the +1 model-only target.
+```
+
+New scripts:
+
+```text
+run_scheme_o_t10_hitszvcm_v100.sh
+run_scheme_p_t10_hitszvcm_v100.sh
+run_scheme_q_t10_hitszvcm_v100.sh
+run_no_rerank_eval_t10_hitszvcm_v100.sh
+```
+
+Recommended sequential validation:
+
+```bash
+tmux new -d -s m3_hitsz_o 'cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM bash ./run_scheme_o_t10_hitszvcm_v100.sh'
+```
+
+After Scheme O finishes and its best single-clip result is parsed:
+
+```bash
+tmux new -d -s m3_hitsz_p 'cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM bash ./run_scheme_p_t10_hitszvcm_v100.sh'
+```
+
+After Scheme P finishes:
+
+```bash
+tmux new -d -s m3_hitsz_q 'cd /root/work/M3-ReID && CONDA_ENV=base HITSZ_DIR=/root/work/HITSZ-VCM bash ./run_scheme_q_t10_hitszvcm_v100.sh'
+```
+
+Decision rule:
+
+```text
+Primary target: compare each run against the original baseline-derived target: i2v 74.58 / v2i 78.00.
+Secondary diagnostic: compare against SchemeD single-clip alpha=0.05: i2v 74.39 / v2i 77.64.
+Accept a model-only solution only if both directions pass the primary target.
+If a scheme passes only one direction, tune that scheme narrowly before moving to another broad architecture.
+If all three stay below the primary target, do not claim model-only success; report SchemeD as partial model gain and SchemeM/N as separate re-ranking gain.
+```
+
 ## BUPTCampus Next Stage
 
 Dataset path:
@@ -618,10 +736,10 @@ Initial BUPTCampus training/evaluation plan:
 
 ```text
 1. Train the original BUPTCampus t=10 baseline and record its best Rank-1.
-2. Set the BUPTCampus +2 targets from that baseline.
+2. Set the BUPTCampus model-only +1 targets from that baseline.
 3. Warm-start SchemeD dual_fusion from the BUPTCampus baseline checkpoint.
-4. Evaluate the best SchemeD checkpoint with SchemeH multi-clip.
-5. Only after SchemeD exists, evaluate SchemeN and sweep FUSION_ALPHA / reciprocal weights.
+4. Evaluate model-only single-clip results first.
+5. Only report SchemeH or SchemeN as separate inference/re-ranking analyses, not as model-only target progress.
 ```
 
 Baseline training command:
@@ -664,7 +782,7 @@ FUSION_ALPHA:RECIPROCAL_TOPK:RECIPROCAL_WEIGHT_I2V:RECIPROCAL_WEIGHT_V2I
 Important:
 
 ```text
-Before judging BUPTCampus progress, identify the baseline Rank-1 and the +2 target for both directions.
+Before judging BUPTCampus progress, identify the baseline Rank-1 and the +1 model-only target for both directions.
 Do not assume HITSZ final weights are optimal on BUPTCampus.
 ```
 
@@ -694,10 +812,18 @@ MODEL_CKPT=<SchemeK output dir>/modelckpt/model_best.pth
 
 ## Overall Conclusion
 
-The only clearly effective route so far is:
+The only route that reached the old HITSZ +2 target used re-ranking:
 
 ```text
-SchemeD dual_fusion + SchemeH multi-clip
+SchemeD dual_fusion + SchemeH multi-clip + SchemeM/N direction-aware re-ranking
+```
+
+Under the current model-only +1 target, the strongest completed model-side result is still short:
+
+```text
+SchemeD single-clip alpha=0.05
+i2v 74.39 / v2i 77.64
+Target i2v 74.58 / v2i 78.00
 ```
 
 Failed routes share a pattern:
@@ -715,6 +841,6 @@ Top-1 retrieval ordering, especially i2v, not ordinary classification convergenc
 
 Next priority:
 
-1. Analyze Scheme K logs.
-2. If Scheme K fails, move to Scheme L: part-level cross-modal matching score.
-3. Avoid more loss-only tuning unless it directly targets top-1 ranking.
+1. Run Schemes O/P/Q sequentially for model-only +1 validation.
+2. Move BUPTCampus from baseline training, because no current BUPTCampus checkpoint exists in this M3Plus round.
+3. Keep HITSZ SchemeM/N only as a separate re-ranking result, not as model-only target evidence.

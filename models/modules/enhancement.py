@@ -192,3 +192,86 @@ class AdaptiveFusionGate(nn.Module):
         gate_input = torch.cat([self.global_norm(global_embed), self.part_norm(part_embed)], dim=1)
         gate = torch.sigmoid(self.net(gate_input))
         return self.min_alpha + (self.max_alpha - self.min_alpha) * gate
+
+
+class GatedResidualFusion(nn.Module):
+    """
+    Inject local part cues into the global embedding through a tightly bounded
+    residual path. The residual projection starts at zero so a warm-started
+    checkpoint begins from its original global retrieval behavior.
+    """
+
+    def __init__(self, global_dim, part_dim, hidden_dim=256, init_scale=0.05, max_scale=0.10):
+        super().__init__()
+        if hidden_dim <= 0:
+            raise ValueError('hidden_dim must be positive.')
+        if not 0.0 < max_scale <= 1.0:
+            raise ValueError('max_scale must be in (0, 1].')
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.part_proj = nn.Linear(part_dim, global_dim, bias=False)
+        self.gate = nn.Sequential(
+            nn.Linear(global_dim + part_dim, hidden_dim, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 1, bias=True),
+            nn.Sigmoid(),
+        )
+        self.scale = nn.Parameter(torch.tensor(float(init_scale)))
+        self.max_scale = float(max_scale)
+
+        nn.init.zeros_(self.part_proj.weight)
+        nn.init.zeros_(self.gate[-2].weight)
+        nn.init.zeros_(self.gate[-2].bias)
+
+    def forward(self, global_embed, part_embed):
+        gate_input = torch.cat([self.global_norm(global_embed), self.part_norm(part_embed)], dim=1)
+        gate = self.gate(gate_input)
+        scale = torch.clamp(self.scale, min=0.0, max=self.max_scale)
+        residual = self.part_proj(part_embed)
+        return global_embed + scale * gate * residual, gate
+
+
+class PartAwareTokenFusion(nn.Module):
+    """
+    Use the global descriptor as a query over local body-part tokens, then inject
+    the attended local context through a zero-initialized residual projection.
+    """
+
+    def __init__(self, global_dim, part_dim, part_num=4, token_dim=256,
+                 init_scale=0.05, max_scale=0.10):
+        super().__init__()
+        if part_num <= 0 or part_dim % part_num != 0:
+            raise ValueError('part_dim must be divisible by part_num.')
+        if token_dim <= 0:
+            raise ValueError('token_dim must be positive.')
+        if not 0.0 < max_scale <= 1.0:
+            raise ValueError('max_scale must be in (0, 1].')
+
+        part_channels = part_dim // part_num
+        self.part_num = part_num
+        self.part_channels = part_channels
+        self.token_dim = token_dim
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_channels)
+        self.query = nn.Linear(global_dim, token_dim, bias=False)
+        self.key = nn.Linear(part_channels, token_dim, bias=False)
+        self.value = nn.Linear(part_channels, token_dim, bias=False)
+        self.out = nn.Linear(token_dim, global_dim, bias=False)
+        self.scale = nn.Parameter(torch.tensor(float(init_scale)))
+        self.max_scale = float(max_scale)
+
+        nn.init.zeros_(self.out.weight)
+
+    def forward(self, global_embed, part_embed):
+        parts = part_embed.reshape(part_embed.size(0), self.part_num, self.part_channels)
+        parts = self.part_norm(parts)
+        query = self.query(self.global_norm(global_embed)).unsqueeze(1)
+        key = self.key(parts)
+        attn = torch.softmax((query * key).sum(dim=-1) / math.sqrt(self.token_dim), dim=1)
+        value = self.value(parts)
+        context = (attn.unsqueeze(-1) * value).sum(dim=1)
+        residual = self.out(context)
+        scale = torch.clamp(self.scale, min=0.0, max=self.max_scale)
+        return global_embed + scale * residual, attn

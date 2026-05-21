@@ -26,7 +26,9 @@ from models.modules.normalize import Normalize
 from models.modules.enhancement import LightweightChannelSpatialAttention
 from models.modules.enhancement import MultiScaleResidualFusion
 from models.modules.enhancement import AdaptiveFusionGate
+from models.modules.enhancement import GatedResidualFusion
 from models.modules.enhancement import PartGuidedAggregation
+from models.modules.enhancement import PartAwareTokenFusion
 from models.modules.enhancement import TemporalEmbeddingRefinement
 
 
@@ -68,19 +70,29 @@ class M3ReID(nn.Module):
         self.use_enhancements = use_enhancements
         if m3plus_mode not in (
             'full', 'part_only', 'local_residual', 'dual_fusion',
-            'temporal_dual_fusion', 'adaptive_dual_fusion'
+            'temporal_dual_fusion', 'adaptive_dual_fusion',
+            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
         ):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
         self.use_feature_enhancers = use_enhancements and m3plus_mode == 'full'
         self.use_part_branch = use_enhancements and m3plus_mode in (
             'full', 'part_only', 'local_residual', 'dual_fusion',
-            'temporal_dual_fusion', 'adaptive_dual_fusion'
+            'temporal_dual_fusion', 'adaptive_dual_fusion',
+            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
         )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
         self.use_dual_fusion = use_enhancements and m3plus_mode in (
-            'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion'
+            'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
+            'supervised_dual_fusion'
         )
+        self.use_supervised_dual_fusion = use_enhancements and m3plus_mode == 'supervised_dual_fusion'
+        self.use_part_supervision = use_enhancements and m3plus_mode in (
+            'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
+            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
+        )
+        self.use_gated_residual_fusion = use_enhancements and m3plus_mode == 'gated_residual_fusion'
+        self.use_part_token_fusion = use_enhancements and m3plus_mode == 'part_token_fusion'
         self.use_temporal_refine = use_enhancements and m3plus_mode == 'temporal_dual_fusion'
         self.use_adaptive_dual_fusion = use_enhancements and m3plus_mode == 'adaptive_dual_fusion'
         self.fusion_alpha = float(fusion_alpha)
@@ -119,6 +131,22 @@ class M3ReID(nn.Module):
                 self.part_residual = nn.Linear(part_dim, self.embedding_dim, bias=False)
                 nn.init.zeros_(self.part_residual.weight)
                 self.part_residual_scale = nn.Parameter(torch.tensor(0.1))
+            elif self.use_gated_residual_fusion:
+                self.part_bn_neck = nn.BatchNorm1d(part_dim)
+                nn.init.constant_(self.part_bn_neck.bias, 0)
+                self.part_bn_neck.bias.requires_grad_(False)
+                self.part_classifier_frame = nn.Linear(part_dim, class_num, bias=False)
+                self.part_classifier = nn.Linear(part_dim, class_num, bias=False)
+                self.gated_residual_fusion = GatedResidualFusion(self.embedding_dim, part_dim)
+            elif self.use_part_token_fusion:
+                self.part_bn_neck = nn.BatchNorm1d(part_dim)
+                nn.init.constant_(self.part_bn_neck.bias, 0)
+                self.part_bn_neck.bias.requires_grad_(False)
+                self.part_classifier_frame = nn.Linear(part_dim, class_num, bias=False)
+                self.part_classifier = nn.Linear(part_dim, class_num, bias=False)
+                self.part_token_fusion = PartAwareTokenFusion(
+                    self.embedding_dim, part_dim, part_num=part_num
+                )
             elif self.use_dual_fusion:
                 self.part_bn_neck = nn.BatchNorm1d(part_dim)
                 nn.init.constant_(self.part_bn_neck.bias, 0)
@@ -130,6 +158,7 @@ class M3ReID(nn.Module):
                         self.embedding_dim, part_dim, init_alpha=fusion_alpha,
                         min_alpha=adaptive_gate_min, max_alpha=adaptive_gate_max
                     )
+                if self.use_adaptive_dual_fusion or self.use_supervised_dual_fusion:
                     self.fusion_bn_neck = nn.BatchNorm1d(self.embedding_dim + part_dim)
                     nn.init.constant_(self.fusion_bn_neck.bias, 0)
                     self.fusion_bn_neck.bias.requires_grad_(False)
@@ -166,12 +195,20 @@ class M3ReID(nn.Module):
         part_eval = self.l2_norm(part_embed) * torch.sqrt(alpha)
         return torch.cat([global_eval, part_eval], dim=1), alpha
 
+    def _fixed_dual_fusion(self, global_embed, part_embed):
+        alpha = min(max(self.fusion_alpha, 0.0), 1.0)
+        alpha_tensor = global_embed.new_full((global_embed.size(0), 1), alpha)
+        global_eval = self.l2_norm(global_embed) * ((1.0 - alpha) ** 0.5)
+        part_eval = self.l2_norm(part_embed) * (alpha ** 0.5)
+        return torch.cat([global_eval, part_eval], dim=1), alpha_tensor
+
     def set_scheme_d_base_trainable(self, trainable):
-        if not self.use_dual_fusion:
+        if not self.use_part_supervision:
             return
         part_prefixes = (
             'part_aggregation', 'part_bn_neck', 'part_classifier', 'temporal_refine',
             'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
+            'gated_residual_fusion', 'part_token_fusion',
         )
         for name, param in self.named_parameters():
             param.requires_grad_(trainable or name.startswith(part_prefixes))
@@ -273,10 +310,19 @@ class M3ReID(nn.Module):
         global_feat = global_feat.reshape(b, t, C, H, W)
         x_pool, mvl_att_masks = self._checkpoint_if_enabled(self._mvl_forward, global_feat)
         part_pool = None
+        fusion_gate = None
         if self.use_part_branch:
             part_pool = self._checkpoint_if_enabled(self.part_aggregation, global_feat)
             if self.use_local_residual:
                 x_pool = x_pool + self.part_residual_scale * self.part_residual(part_pool)
+            elif self.use_gated_residual_fusion:
+                x_pool, fusion_gate = self._checkpoint_if_enabled(
+                    self.gated_residual_fusion, x_pool, part_pool
+                )
+            elif self.use_part_token_fusion:
+                x_pool, fusion_gate = self._checkpoint_if_enabled(
+                    self.part_token_fusion, x_pool, part_pool
+                )
             elif not self.use_dual_fusion:
                 x_pool = torch.cat([x_pool, part_pool], dim=1)
 
@@ -291,7 +337,7 @@ class M3ReID(nn.Module):
         x_embed_mean = torch.mean(x_embed, dim=1)
 
         part_aux = None
-        if self.use_dual_fusion:
+        if self.use_part_supervision:
             part_embed = self.part_bn_neck(part_pool)
             part_embed = part_embed.reshape(-1, t, part_embed.shape[-1])
             part_embed_mean = torch.mean(part_embed, dim=1)
@@ -301,7 +347,7 @@ class M3ReID(nn.Module):
             b, t, c = x_embed.shape
             x_logits = self.classifier_frame(self.feature_dropout(x_embed.reshape(b * t, c))).reshape(b, t, -1)
             x_logits_mean = self.classifier(self.feature_dropout(x_embed_mean))
-            if self.use_dual_fusion:
+            if self.use_part_supervision:
                 part_embed, part_embed_mean = part_aux
                 part_b, part_t, part_c = part_embed.shape
                 part_logits = self.part_classifier_frame(
@@ -314,13 +360,18 @@ class M3ReID(nn.Module):
                     'part_logits': part_logits,
                     'part_logits_mean': part_logits_mean,
                 }
-                if self.use_adaptive_dual_fusion:
-                    fusion_embed_mean, fusion_gate = self._adaptive_fusion(x_embed_mean, part_embed_mean)
+                if fusion_gate is not None:
+                    aux['fusion_gate'] = fusion_gate.reshape(-1, t, fusion_gate.shape[-1]).mean(dim=1)
+                if self.use_adaptive_dual_fusion or self.use_supervised_dual_fusion:
+                    if self.use_adaptive_dual_fusion:
+                        fusion_embed_mean, fusion_gate_mean = self._adaptive_fusion(x_embed_mean, part_embed_mean)
+                    else:
+                        fusion_embed_mean, fusion_gate_mean = self._fixed_dual_fusion(x_embed_mean, part_embed_mean)
                     fusion_bn = self.fusion_bn_neck(fusion_embed_mean)
                     aux.update({
                         'fusion_embed_mean': fusion_embed_mean,
                         'fusion_logits_mean': self.fusion_classifier(self.feature_dropout(fusion_bn)),
-                        'fusion_gate': fusion_gate,
+                        'fusion_gate': fusion_gate_mean,
                     })
                 return (x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks, aux)
             return x_embed, x_embed_mean, x_logits, x_logits_mean, mvl_att_masks
@@ -328,8 +379,5 @@ class M3ReID(nn.Module):
             if self.use_dual_fusion:
                 if self.use_adaptive_dual_fusion:
                     return self._adaptive_fusion(x_embed_mean, part_aux[1])[0]
-                alpha = min(max(self.fusion_alpha, 0.0), 1.0)
-                global_eval = self.l2_norm(x_embed_mean) * ((1.0 - alpha) ** 0.5)
-                part_eval = self.l2_norm(part_aux[1]) * (alpha ** 0.5)
-                return torch.cat([global_eval, part_eval], dim=1)
+                return self._fixed_dual_fusion(x_embed_mean, part_aux[1])[0]
             return self.l2_norm(x_embed_mean)
