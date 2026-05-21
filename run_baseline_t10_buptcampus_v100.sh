@@ -11,6 +11,7 @@ K_NUM="${K_NUM:-4}"
 TEST_BATCH_SIZE="${TEST_BATCH_SIZE:-16}"
 ACCUM_STEPS="${ACCUM_STEPS:-2}"
 OPTIMIZER="${OPTIMIZER:-adam}"
+LR="${LR:-0.0001}"
 EPOCHS="${EPOCHS:-200}"
 EVAL_START_EPOCH="${EVAL_START_EPOCH:-80}"
 TEST_INTERVAL="${TEST_INTERVAL:-5}"
@@ -20,8 +21,16 @@ PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-0}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
 LR_MILESTONES="${LR_MILESTONES:-80,120}"
+RESUME="${RESUME:-}"
 
 EXTRA_ARGS=()
+if [ -n "${RESUME}" ]; then
+  if [ ! -f "${RESUME}" ]; then
+    echo "RESUME checkpoint does not exist: ${RESUME}"
+    exit 1
+  fi
+  EXTRA_ARGS+=(--resume "${RESUME}")
+fi
 if [ "${PERSISTENT_WORKERS}" = "1" ]; then
   EXTRA_ARGS+=(--persistent_workers)
 else
@@ -46,7 +55,7 @@ python train_m3reid.py \
   --non_blocking \
   --torch_sharing_strategy "${TORCH_SHARING_STRATEGY}" \
   --cudnn_benchmark \
-  --lr 0.0001 --wd 0.0005 \
+  --lr "${LR}" --wd 0.0005 \
   --optimizer "${OPTIMIZER}" \
   --accum_steps "${ACCUM_STEPS}" \
   --lr_milestones "${LR_MILESTONES}" \
