@@ -5,6 +5,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class _GradientReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.scale * grad_output, None
+
+
 class MultiScaleResidualFusion(nn.Module):
     """
     Fuse layer3 detail cues into the final layer4 feature map with a residual gate.
@@ -435,3 +446,86 @@ class BidirectionalModalityCalibration(nn.Module):
         )
         rgb_gate = rgb_prob
         return fused, router_logits, rgb_gate
+
+
+class ModalityInvariantSpecificCalibration(nn.Module):
+    """
+    Split global adaptation into a modality-invariant route and a modality-specific
+    correction route. The invariant route is optimized with cross-modality
+    consistency and modality-adversarial supervision, while the specific route
+    uses a lightweight router to add bounded IR/RGB residual corrections.
+    """
+
+    def __init__(self, global_dim, part_dim, router_hidden=128, adapter_dim=128,
+                 adv_hidden=128, init_scale=0.03, max_scale=0.08,
+                 grl_scale=1.0):
+        super().__init__()
+        if router_hidden <= 0 or adapter_dim <= 0 or adv_hidden <= 0:
+            raise ValueError('router_hidden, adapter_dim, and adv_hidden must be positive.')
+        if not 0.0 < max_scale <= 1.0:
+            raise ValueError('max_scale must be in (0, 1].')
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.max_scale = float(max_scale)
+        self.grl_scale = float(grl_scale)
+
+        self.invariant_down = nn.Linear(global_dim, adapter_dim, bias=False)
+        self.invariant_up = nn.Linear(adapter_dim, global_dim, bias=False)
+        self.invariant_scale = nn.Parameter(torch.tensor(float(init_scale)))
+
+        self.router = nn.Sequential(
+            nn.Linear(global_dim + part_dim, router_hidden, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(router_hidden, 2, bias=True),
+        )
+        self.specific_down = nn.Linear(global_dim + part_dim, adapter_dim, bias=False)
+        self.ir_up = nn.Linear(adapter_dim, global_dim, bias=False)
+        self.rgb_up = nn.Linear(adapter_dim, global_dim, bias=False)
+        self.specific_scale = nn.Parameter(torch.tensor(float(init_scale)))
+
+        self.modality_classifier = nn.Sequential(
+            nn.LayerNorm(global_dim),
+            nn.Linear(global_dim, adv_hidden, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(adv_hidden, 2, bias=True),
+        )
+        self.act = nn.GELU()
+
+        nn.init.zeros_(self.invariant_up.weight)
+        nn.init.zeros_(self.router[-1].weight)
+        nn.init.zeros_(self.router[-1].bias)
+        nn.init.zeros_(self.ir_up.weight)
+        nn.init.zeros_(self.rgb_up.weight)
+
+    def _orthogonalize(self, residual, reference):
+        reference = F.normalize(reference.detach(), dim=1)
+        projection = (residual * reference).sum(dim=1, keepdim=True) * reference
+        return residual - projection
+
+    def forward(self, global_embed, part_embed):
+        global_norm = self.global_norm(global_embed)
+        part_norm = self.part_norm(part_embed)
+
+        invariant_delta = self._orthogonalize(
+            self.invariant_up(self.act(self.invariant_down(global_norm))),
+            global_embed,
+        )
+        invariant_scale = torch.clamp(self.invariant_scale, min=0.0, max=self.max_scale)
+        invariant_embed = global_embed + invariant_scale * invariant_delta
+
+        router_input = torch.cat([global_norm, part_norm], dim=1)
+        router_logits = self.router(router_input)
+        router_prob = torch.softmax(router_logits, dim=1)
+        ir_prob = router_prob[:, 0:1]
+        rgb_prob = router_prob[:, 1:2]
+
+        specific_hidden = self.act(self.specific_down(router_input))
+        ir_delta = self._orthogonalize(self.ir_up(specific_hidden), invariant_embed)
+        rgb_delta = self._orthogonalize(self.rgb_up(specific_hidden), invariant_embed)
+        specific_scale = torch.clamp(self.specific_scale, min=0.0, max=self.max_scale)
+        fused = invariant_embed + specific_scale * (ir_prob * ir_delta + rgb_prob * rgb_delta)
+
+        reversed_embed = _GradientReverse.apply(invariant_embed, self.grl_scale)
+        modality_logits = self.modality_classifier(reversed_embed)
+        return fused, router_logits, rgb_prob, invariant_embed, modality_logits

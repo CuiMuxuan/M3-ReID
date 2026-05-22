@@ -25,6 +25,7 @@ import time
 import argparse
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
@@ -113,7 +114,7 @@ def build_train_params(args, model):
         'part_aggregation', 'part_bn_neck', 'part_classifier',
         'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
         'gated_residual_fusion', 'part_token_fusion', 'reliability_part_fusion',
-        'bidirectional_calibration',
+        'bidirectional_calibration', 'invariant_specific_calibration',
     )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
@@ -139,6 +140,21 @@ def parse_lr_milestones(milestones):
     if milestones is None or milestones.strip() == '':
         return []
     return [int(item.strip()) for item in milestones.split(',') if item.strip()]
+
+
+def cross_modality_identity_consistency(features, labels, modality_labels):
+    losses = []
+    for pid in labels.unique():
+        pid_mask = labels == pid
+        ir_mask = pid_mask & (modality_labels == 1)
+        rgb_mask = pid_mask & (modality_labels == 2)
+        if ir_mask.any() and rgb_mask.any():
+            ir_center = F.normalize(features[ir_mask].mean(dim=0, keepdim=True), p=2, dim=1)
+            rgb_center = F.normalize(features[rgb_mask].mean(dim=0, keepdim=True), p=2, dim=1)
+            losses.append(1.0 - (ir_center * rgb_center).sum(dim=1))
+    if not losses:
+        return features.new_zeros(())
+    return torch.cat(losses).mean()
 
 
 if __name__ == '__main__':
@@ -195,7 +211,8 @@ if __name__ == '__main__':
                                  'temporal_dual_fusion', 'adaptive_dual_fusion',
                                  'supervised_dual_fusion', 'gated_residual_fusion',
                                  'part_token_fusion', 'reliability_part_fusion',
-                                 'bidirectional_calibration'],
+                                 'bidirectional_calibration',
+                                 'invariant_specific_calibration'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -278,6 +295,10 @@ if __name__ == '__main__':
                         help='First 1-based epoch to enable cross-modality prototype triplet loss')
     parser.add_argument('--router_weight', default=0.05, type=float,
                         help='Weight of bidirectional_calibration modality-router supervision')
+    parser.add_argument('--modality_adv_weight', default=0.0, type=float,
+                        help='Weight of SchemeU modality-adversarial invariant supervision')
+    parser.add_argument('--invariant_consistency_weight', default=0.0, type=float,
+                        help='Weight of SchemeU same-ID cross-modality invariant consistency loss')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -498,7 +519,8 @@ if __name__ == '__main__':
     part_supervision_modes = (
         'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
         'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
-        'reliability_part_fusion', 'bidirectional_calibration'
+        'reliability_part_fusion', 'bidirectional_calibration',
+        'invariant_specific_calibration'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -553,6 +575,9 @@ if __name__ == '__main__':
           f'part_cross_proto_weight={args.part_cross_proto_weight}, '
           f'cross_proto_margin={args.cross_proto_margin}, '
           f'cross_proto_start_epoch={args.cross_proto_start_epoch}, '
+          f'router_weight={args.router_weight}, '
+          f'modality_adv_weight={args.modality_adv_weight}, '
+          f'invariant_consistency_weight={args.invariant_consistency_weight}, '
           f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
           f'lr_milestones={lr_milestones}')
 
@@ -646,6 +671,8 @@ if __name__ == '__main__':
                 loss_cross_proto = x_embed_m.new_zeros(())
                 loss_part_cross_proto = x_embed_m.new_zeros(())
                 loss_router = x_embed_m.new_zeros(())
+                loss_modality_adv = x_embed_m.new_zeros(())
+                loss_invariant_consistency = x_embed_m.new_zeros(())
                 proto_enabled = epoch + 1 >= args.proto_start_epoch
                 cross_proto_enabled = epoch + 1 >= args.cross_proto_start_epoch
                 cosface_enabled = epoch + 1 >= args.cosface_start_epoch
@@ -701,6 +728,14 @@ if __name__ == '__main__':
                         router_targets = (m_labels == 2).long()
                         loss_router = criterion_ce_loss(router_logits, router_targets)
                         fusion_gate_mean = part_aux['fusion_gate'].detach().mean()
+                    if 'modality_logits' in part_aux:
+                        modality_logits = part_aux['modality_logits']
+                        modality_targets = (m_labels == 2).long()
+                        loss_modality_adv = criterion_ce_loss(modality_logits, modality_targets)
+                    if 'invariant_embed_mean' in part_aux:
+                        loss_invariant_consistency = cross_modality_identity_consistency(
+                            part_aux['invariant_embed_mean'], id_labels, m_labels
+                        )
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -723,8 +758,13 @@ if __name__ == '__main__':
             loss = loss + args.part_proto_weight * loss_part_proto
             loss = loss + args.cross_proto_weight * loss_cross_proto
             loss = loss + args.part_cross_proto_weight * loss_part_cross_proto
-            if args.use_m3plus and args.m3plus_mode == 'bidirectional_calibration':
+            if args.use_m3plus and args.m3plus_mode in (
+                'bidirectional_calibration', 'invariant_specific_calibration'
+            ):
                 loss = loss + args.router_weight * loss_router
+            if args.use_m3plus and args.m3plus_mode == 'invariant_specific_calibration':
+                loss = loss + args.modality_adv_weight * loss_modality_adv
+                loss = loss + args.invariant_consistency_weight * loss_invariant_consistency
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -768,6 +808,8 @@ if __name__ == '__main__':
                       f'loss_cross_proto: {loss_cross_proto.data:.4f} '
                       f'loss_part_cross_proto: {loss_part_cross_proto.data:.4f} '
                       f'loss_router: {loss_router.data:.4f} '
+                      f'loss_modality_adv: {loss_modality_adv.data:.4f} '
+                      f'loss_invariant_consistency: {loss_invariant_consistency.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -789,6 +831,8 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_cross_proto', loss_cross_proto.data, iter_num)
                 writer.add_scalar('metric/loss_part_cross_proto', loss_part_cross_proto.data, iter_num)
                 writer.add_scalar('metric/loss_router', loss_router.data, iter_num)
+                writer.add_scalar('metric/loss_modality_adv', loss_modality_adv.data, iter_num)
+                writer.add_scalar('metric/loss_invariant_consistency', loss_invariant_consistency.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
