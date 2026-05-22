@@ -307,6 +307,12 @@ if __name__ == '__main__':
                         help='Weight of SchemeV projection subspace cross-modality triplet loss')
     parser.add_argument('--projection_mma_weight', default=0.0, type=float,
                         help='Weight of SchemeV projection subspace modality alignment loss')
+    parser.add_argument('--projection_gate_weight', default=0.0, type=float,
+                        help='Weight of SchemeV modality-aware projection gate supervision')
+    parser.add_argument('--projection_gate_ir_target', default=0.7, type=float,
+                        help='SchemeV target projection gate value for IR tracks')
+    parser.add_argument('--projection_gate_rgb_target', default=0.3, type=float,
+                        help='SchemeV target projection gate value for RGB tracks')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -589,6 +595,9 @@ if __name__ == '__main__':
           f'projection_id_weight={args.projection_id_weight}, '
           f'projection_triplet_weight={args.projection_triplet_weight}, '
           f'projection_mma_weight={args.projection_mma_weight}, '
+          f'projection_gate_weight={args.projection_gate_weight}, '
+          f'projection_gate_ir_target={args.projection_gate_ir_target}, '
+          f'projection_gate_rgb_target={args.projection_gate_rgb_target}, '
           f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
           f'lr_milestones={lr_milestones}')
 
@@ -687,6 +696,7 @@ if __name__ == '__main__':
                 loss_projection_id = x_embed_m.new_zeros(())
                 loss_projection_triplet = x_embed_m.new_zeros(())
                 loss_projection_mma = x_embed_m.new_zeros(())
+                loss_projection_gate = x_embed_m.new_zeros(())
                 proto_enabled = epoch + 1 >= args.proto_start_epoch
                 cross_proto_enabled = epoch + 1 >= args.cross_proto_start_epoch
                 cosface_enabled = epoch + 1 >= args.cosface_start_epoch
@@ -737,11 +747,13 @@ if __name__ == '__main__':
                         fusion_logits_m = part_aux['fusion_logits_mean']
                         loss_fusion_id = criterion_ce_loss(fusion_logits_m, labels)
                         loss_fusion_triplet = criterion_triplet_loss(fusion_embed_m, id_labels, m_labels)
+                    if 'fusion_gate' in part_aux:
+                        fusion_gate = part_aux['fusion_gate']
+                        fusion_gate_mean = fusion_gate.detach().mean()
                     if 'router_logits' in part_aux:
                         router_logits = part_aux['router_logits']
                         router_targets = (m_labels == 2).long()
                         loss_router = criterion_ce_loss(router_logits, router_targets)
-                        fusion_gate_mean = part_aux['fusion_gate'].detach().mean()
                     if 'modality_logits' in part_aux:
                         modality_logits = part_aux['modality_logits']
                         modality_targets = (m_labels == 2).long()
@@ -771,6 +783,16 @@ if __name__ == '__main__':
                         loss_projection_triplet = (
                             loss_projection_triplet + args.triplet_frame_weight * loss_projection_triplet_frames
                         )
+                        if 'fusion_gate' in part_aux:
+                            projection_gate = part_aux['fusion_gate']
+                            ir_targets = projection_gate.new_full(
+                                projection_gate.shape, args.projection_gate_ir_target
+                            )
+                            rgb_targets = projection_gate.new_full(
+                                projection_gate.shape, args.projection_gate_rgb_target
+                            )
+                            gate_targets = torch.where(m_labels.unsqueeze(1) == 1, ir_targets, rgb_targets)
+                            loss_projection_gate = F.mse_loss(projection_gate, gate_targets)
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -804,6 +826,7 @@ if __name__ == '__main__':
                 loss = loss + args.projection_id_weight * loss_projection_id
                 loss = loss + args.projection_triplet_weight * loss_projection_triplet
                 loss = loss + args.projection_mma_weight * loss_projection_mma
+                loss = loss + args.projection_gate_weight * loss_projection_gate
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -852,6 +875,7 @@ if __name__ == '__main__':
                       f'loss_projection_id: {loss_projection_id.data:.4f} '
                       f'loss_projection_triplet: {loss_projection_triplet.data:.4f} '
                       f'loss_projection_mma: {loss_projection_mma.data:.4f} '
+                      f'loss_projection_gate: {loss_projection_gate.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -878,6 +902,7 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_projection_id', loss_projection_id.data, iter_num)
                 writer.add_scalar('metric/loss_projection_triplet', loss_projection_triplet.data, iter_num)
                 writer.add_scalar('metric/loss_projection_mma', loss_projection_mma.data, iter_num)
+                writer.add_scalar('metric/loss_projection_gate', loss_projection_gate.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
