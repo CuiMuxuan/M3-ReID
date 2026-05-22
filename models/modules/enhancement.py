@@ -353,3 +353,85 @@ class ReliabilityCalibratedPartFusion(nn.Module):
         fused = global_embed + global_scale * global_delta + local_scale * local_delta
         reliability_score = (attn * reliability).sum(dim=1, keepdim=True)
         return fused, reliability_score
+
+
+class BidirectionalModalityCalibration(nn.Module):
+    """
+    Direction-aware residual calibration for IR/RGB clips.
+
+    The router predicts whether a clip is closer to IR or RGB statistics from the
+    global and part descriptors. Two zero-initialized residual adapters then
+    specialize to the two modalities while a shared calibration path keeps the
+    output anchored to the warm-started baseline embedding.
+    """
+
+    def __init__(self, global_dim, part_dim, router_hidden=128, adapter_dim=128,
+                 init_scale=0.03, max_scale=0.08):
+        super().__init__()
+        if router_hidden <= 0 or adapter_dim <= 0:
+            raise ValueError('router_hidden and adapter_dim must be positive.')
+        if not 0.0 < max_scale <= 1.0:
+            raise ValueError('max_scale must be in (0, 1].')
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.router = nn.Sequential(
+            nn.Linear(global_dim + part_dim, router_hidden, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(router_hidden, 2, bias=True),
+        )
+        self.shared_down = nn.Linear(global_dim, adapter_dim, bias=False)
+        self.shared_up = nn.Linear(adapter_dim, global_dim, bias=False)
+        self.ir_down = nn.Linear(global_dim, adapter_dim, bias=False)
+        self.ir_up = nn.Linear(adapter_dim, global_dim, bias=False)
+        self.rgb_down = nn.Linear(global_dim, adapter_dim, bias=False)
+        self.rgb_up = nn.Linear(adapter_dim, global_dim, bias=False)
+        self.act = nn.GELU()
+        self.shared_scale = nn.Parameter(torch.tensor(float(init_scale)))
+        self.ir_scale = nn.Parameter(torch.tensor(float(init_scale)))
+        self.rgb_scale = nn.Parameter(torch.tensor(float(init_scale)))
+        self.max_scale = float(max_scale)
+
+        nn.init.zeros_(self.router[-1].weight)
+        nn.init.zeros_(self.router[-1].bias)
+        nn.init.zeros_(self.shared_up.weight)
+        nn.init.zeros_(self.ir_up.weight)
+        nn.init.zeros_(self.rgb_up.weight)
+
+    def _orthogonalize(self, residual, reference):
+        reference = F.normalize(reference.detach(), dim=1)
+        projection = (residual * reference).sum(dim=1, keepdim=True) * reference
+        return residual - projection
+
+    def _adapter(self, down, up, x):
+        return up(self.act(down(x)))
+
+    def forward(self, global_embed, part_embed):
+        global_norm = self.global_norm(global_embed)
+        part_norm = self.part_norm(part_embed)
+        router_logits = self.router(torch.cat([global_norm, part_norm], dim=1))
+        router_prob = torch.softmax(router_logits, dim=1)
+        ir_prob = router_prob[:, 0:1]
+        rgb_prob = router_prob[:, 1:2]
+
+        shared_delta = self._orthogonalize(
+            self._adapter(self.shared_down, self.shared_up, global_norm), global_embed
+        )
+        ir_delta = self._orthogonalize(
+            self._adapter(self.ir_down, self.ir_up, global_norm), global_embed
+        )
+        rgb_delta = self._orthogonalize(
+            self._adapter(self.rgb_down, self.rgb_up, global_norm), global_embed
+        )
+
+        shared_scale = torch.clamp(self.shared_scale, min=0.0, max=self.max_scale)
+        ir_scale = torch.clamp(self.ir_scale, min=0.0, max=self.max_scale)
+        rgb_scale = torch.clamp(self.rgb_scale, min=0.0, max=self.max_scale)
+        fused = (
+            global_embed
+            + shared_scale * shared_delta
+            + ir_prob * ir_scale * ir_delta
+            + rgb_prob * rgb_scale * rgb_delta
+        )
+        rgb_gate = rgb_prob
+        return fused, router_logits, rgb_gate

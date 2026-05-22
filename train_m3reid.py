@@ -113,6 +113,7 @@ def build_train_params(args, model):
         'part_aggregation', 'part_bn_neck', 'part_classifier',
         'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
         'gated_residual_fusion', 'part_token_fusion', 'reliability_part_fusion',
+        'bidirectional_calibration',
     )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
@@ -193,7 +194,8 @@ if __name__ == '__main__':
                         choices=['full', 'part_only', 'local_residual', 'dual_fusion',
                                  'temporal_dual_fusion', 'adaptive_dual_fusion',
                                  'supervised_dual_fusion', 'gated_residual_fusion',
-                                 'part_token_fusion', 'reliability_part_fusion'],
+                                 'part_token_fusion', 'reliability_part_fusion',
+                                 'bidirectional_calibration'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -274,6 +276,8 @@ if __name__ == '__main__':
                         help='Similarity margin for cross-modality prototype triplet loss')
     parser.add_argument('--cross_proto_start_epoch', default=1, type=int,
                         help='First 1-based epoch to enable cross-modality prototype triplet loss')
+    parser.add_argument('--router_weight', default=0.05, type=float,
+                        help='Weight of bidirectional_calibration modality-router supervision')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -494,7 +498,7 @@ if __name__ == '__main__':
     part_supervision_modes = (
         'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
         'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
-        'reliability_part_fusion'
+        'reliability_part_fusion', 'bidirectional_calibration'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -641,6 +645,7 @@ if __name__ == '__main__':
                 loss_part_proto = x_embed_m.new_zeros(())
                 loss_cross_proto = x_embed_m.new_zeros(())
                 loss_part_cross_proto = x_embed_m.new_zeros(())
+                loss_router = x_embed_m.new_zeros(())
                 proto_enabled = epoch + 1 >= args.proto_start_epoch
                 cross_proto_enabled = epoch + 1 >= args.cross_proto_start_epoch
                 cosface_enabled = epoch + 1 >= args.cosface_start_epoch
@@ -691,6 +696,10 @@ if __name__ == '__main__':
                         fusion_logits_m = part_aux['fusion_logits_mean']
                         loss_fusion_id = criterion_ce_loss(fusion_logits_m, labels)
                         loss_fusion_triplet = criterion_triplet_loss(fusion_embed_m, id_labels, m_labels)
+                    if 'router_logits' in part_aux:
+                        router_logits = part_aux['router_logits']
+                        router_targets = (m_labels == 2).long()
+                        loss_router = criterion_ce_loss(router_logits, router_targets)
                         fusion_gate_mean = part_aux['fusion_gate'].detach().mean()
 
             _, predicted = x_logits_m.max(dim=1)
@@ -714,6 +723,8 @@ if __name__ == '__main__':
             loss = loss + args.part_proto_weight * loss_part_proto
             loss = loss + args.cross_proto_weight * loss_cross_proto
             loss = loss + args.part_cross_proto_weight * loss_part_cross_proto
+            if args.use_m3plus and args.m3plus_mode == 'bidirectional_calibration':
+                loss = loss + args.router_weight * loss_router
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -756,6 +767,7 @@ if __name__ == '__main__':
                       f'loss_part_proto: {loss_part_proto.data:.4f} '
                       f'loss_cross_proto: {loss_cross_proto.data:.4f} '
                       f'loss_part_cross_proto: {loss_part_cross_proto.data:.4f} '
+                      f'loss_router: {loss_router.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -776,6 +788,7 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_part_proto', loss_part_proto.data, iter_num)
                 writer.add_scalar('metric/loss_cross_proto', loss_cross_proto.data, iter_num)
                 writer.add_scalar('metric/loss_part_cross_proto', loss_part_cross_proto.data, iter_num)
+                writer.add_scalar('metric/loss_router', loss_router.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
