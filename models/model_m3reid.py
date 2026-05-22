@@ -482,7 +482,8 @@ class M3ReID(nn.Module):
                     return self._adaptive_fusion(x_embed_mean, part_aux[1])[0]
                 return self._fixed_dual_fusion(x_embed_mean, part_aux[1])[0]
             if self.use_anchor_projection_fusion:
-                projection_embed = projection_pool.reshape(-1, t, projection_pool.shape[-1]).mean(dim=1)
+                projection_embed = self.projection_bn_neck(projection_pool)
+                projection_embed = projection_embed.reshape(-1, t, projection_embed.shape[-1]).mean(dim=1)
                 global_eval = self.l2_norm(x_embed_mean) * ((1.0 - self.fusion_alpha) ** 0.5)
                 projection_eval = self.l2_norm(projection_embed) * (self.fusion_alpha ** 0.5)
                 return torch.cat([global_eval, projection_eval], dim=1)
