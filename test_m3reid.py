@@ -295,7 +295,8 @@ if __name__ == '__main__':
                                  'part_token_fusion', 'reliability_part_fusion',
                                  'bidirectional_calibration',
                                  'invariant_specific_calibration',
-                                 'anchor_projection_fusion'],
+                                 'anchor_projection_fusion',
+                                 'dual_calibrated_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,
@@ -310,6 +311,8 @@ if __name__ == '__main__':
                         help='Dropout inside temporal_dual_fusion refinement head')
     parser.add_argument('--fusion_alpha', default=0.2, type=float,
                         help='Local feature weight used by dual_fusion inference, or initial local weight for adaptive_dual_fusion')
+    parser.add_argument('--calibration_alpha', default=0.0, type=float,
+                        help='Calibrated global feature weight used by dual_calibrated_fusion inference')
     parser.add_argument('--adaptive_gate_min', default=0.0, type=float,
                         help='Minimum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--adaptive_gate_max', default=0.12, type=float,
@@ -457,6 +460,7 @@ if __name__ == '__main__':
                    use_enhancements=args.use_m3plus, m3plus_mode=args.m3plus_mode, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
+                   calibration_alpha=args.calibration_alpha,
                    grad_checkpoint_head=args.grad_checkpoint_head,
                    temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout,
                    adaptive_gate_min=args.adaptive_gate_min,

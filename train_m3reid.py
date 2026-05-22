@@ -116,6 +116,7 @@ def build_train_params(args, model):
         'gated_residual_fusion', 'part_token_fusion', 'reliability_part_fusion',
         'bidirectional_calibration', 'invariant_specific_calibration',
         'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
+        'dual_calibration_fusion', 'calibration_bn_neck', 'calibration_classifier',
     )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
@@ -214,7 +215,8 @@ if __name__ == '__main__':
                                  'part_token_fusion', 'reliability_part_fusion',
                                  'bidirectional_calibration',
                                  'invariant_specific_calibration',
-                                 'anchor_projection_fusion'],
+                                 'anchor_projection_fusion',
+                                 'dual_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -230,6 +232,8 @@ if __name__ == '__main__':
                         help='Dropout applied before ID classifiers during training')
     parser.add_argument('--fusion_alpha', default=0.2, type=float,
                         help='Local feature weight used by dual_fusion inference, or initial local weight for adaptive_dual_fusion')
+    parser.add_argument('--calibration_alpha', default=0.0, type=float,
+                        help='Calibrated global feature weight used by dual_calibrated_fusion inference')
     parser.add_argument('--adaptive_gate_min', default=0.0, type=float,
                         help='Minimum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--adaptive_gate_max', default=0.12, type=float,
@@ -313,6 +317,12 @@ if __name__ == '__main__':
                         help='SchemeV target projection gate value for IR tracks')
     parser.add_argument('--projection_gate_rgb_target', default=0.3, type=float,
                         help='SchemeV target projection gate value for RGB tracks')
+    parser.add_argument('--calibration_id_weight', default=0.0, type=float,
+                        help='Weight of SchemeW calibrated global branch ID loss')
+    parser.add_argument('--calibration_triplet_weight', default=0.0, type=float,
+                        help='Weight of SchemeW calibrated global branch cross-modality triplet loss')
+    parser.add_argument('--calibration_mma_weight', default=0.0, type=float,
+                        help='Weight of SchemeW calibrated global branch modality alignment loss')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -464,6 +474,7 @@ if __name__ == '__main__':
                    use_enhancements=args.use_m3plus, m3plus_mode=args.m3plus_mode, part_num=args.part_num,
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
+                   calibration_alpha=args.calibration_alpha,
                    grad_checkpoint_head=args.grad_checkpoint_head,
                    temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout,
                    adaptive_gate_min=args.adaptive_gate_min,
@@ -500,6 +511,22 @@ if __name__ == '__main__':
             print(f'Missing keys preview: {load_result.missing_keys[:12]}')
         if load_result.unexpected_keys:
             print(f'Unexpected keys preview: {load_result.unexpected_keys[:12]}')
+        if args.m3plus_mode == 'dual_calibrated_fusion':
+            missing = set(load_result.missing_keys)
+            with torch.no_grad():
+                if 'calibration_bn_neck.weight' in missing:
+                    model.calibration_bn_neck.weight.copy_(model.bn_neck.weight)
+                if 'calibration_bn_neck.bias' in missing:
+                    model.calibration_bn_neck.bias.copy_(model.bn_neck.bias)
+                if 'calibration_bn_neck.running_mean' in missing:
+                    model.calibration_bn_neck.running_mean.copy_(model.bn_neck.running_mean)
+                if 'calibration_bn_neck.running_var' in missing:
+                    model.calibration_bn_neck.running_var.copy_(model.bn_neck.running_var)
+                if 'calibration_classifier.weight' in missing:
+                    model.calibration_classifier.weight.copy_(model.classifier.weight)
+                if 'calibration_classifier_frame.weight' in missing:
+                    model.calibration_classifier_frame.weight.copy_(model.classifier_frame.weight)
+            print('SchemeW init: copied global BN/classifier into calibration branch for warm start.')
 
     # Loss -------------------------------------------------------------------------------------------------------------
     label_smoothing = args.id_label_smoothing
@@ -534,7 +561,8 @@ if __name__ == '__main__':
         'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
         'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
         'reliability_part_fusion', 'bidirectional_calibration',
-        'invariant_specific_calibration', 'anchor_projection_fusion'
+        'invariant_specific_calibration', 'anchor_projection_fusion',
+        'dual_calibrated_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -571,6 +599,7 @@ if __name__ == '__main__':
           f'fp16={args.fp16}, eval_fp16={args.eval_fp16}, '
           f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
           f'feature_dropout={args.feature_dropout}, fusion_alpha={args.fusion_alpha}, '
+          f'calibration_alpha={args.calibration_alpha}, '
           f'adaptive_gate_min={args.adaptive_gate_min}, adaptive_gate_max={args.adaptive_gate_max}, '
           f'part_lr_mult={args.part_lr_mult}, freeze_base_epochs={args.freeze_base_epochs}, '
           f'temporal_dim={args.temporal_dim}, temporal_dropout={args.temporal_dropout}, '
@@ -598,6 +627,9 @@ if __name__ == '__main__':
           f'projection_gate_weight={args.projection_gate_weight}, '
           f'projection_gate_ir_target={args.projection_gate_ir_target}, '
           f'projection_gate_rgb_target={args.projection_gate_rgb_target}, '
+          f'calibration_id_weight={args.calibration_id_weight}, '
+          f'calibration_triplet_weight={args.calibration_triplet_weight}, '
+          f'calibration_mma_weight={args.calibration_mma_weight}, '
           f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
           f'lr_milestones={lr_milestones}')
 
@@ -697,6 +729,9 @@ if __name__ == '__main__':
                 loss_projection_triplet = x_embed_m.new_zeros(())
                 loss_projection_mma = x_embed_m.new_zeros(())
                 loss_projection_gate = x_embed_m.new_zeros(())
+                loss_calibration_id = x_embed_m.new_zeros(())
+                loss_calibration_triplet = x_embed_m.new_zeros(())
+                loss_calibration_mma = x_embed_m.new_zeros(())
                 proto_enabled = epoch + 1 >= args.proto_start_epoch
                 cross_proto_enabled = epoch + 1 >= args.cross_proto_start_epoch
                 cosface_enabled = epoch + 1 >= args.cosface_start_epoch
@@ -793,6 +828,32 @@ if __name__ == '__main__':
                             )
                             gate_targets = torch.where(m_labels.unsqueeze(1) == 1, ir_targets, rgb_targets)
                             loss_projection_gate = F.mse_loss(projection_gate, gate_targets)
+                    if 'calibration_embed_mean' in part_aux:
+                        calibration_embed = part_aux['calibration_embed']
+                        calibration_embed_m = part_aux['calibration_embed_mean']
+                        calibration_logits = part_aux['calibration_logits']
+                        calibration_logits_m = part_aux['calibration_logits_mean']
+                        cal_b, cal_t, cal_c = calibration_embed.shape
+                        loss_calibration_id = criterion_ce_loss(calibration_logits_m, labels)
+                        loss_calibration_id = loss_calibration_id + criterion_ce_loss(
+                            calibration_logits.reshape(cal_b * cal_t, -1), id_labels.repeat_interleave(cal_t)
+                        )
+                        loss_calibration_mma = criterion_mma_loss(calibration_embed_m, id_labels, m_labels)
+                        loss_calibration_mma = loss_calibration_mma + criterion_mma_loss(
+                            calibration_embed.reshape(cal_b * cal_t, cal_c),
+                            id_labels.repeat_interleave(cal_t),
+                            m_labels.repeat_interleave(cal_t),
+                        )
+                        loss_calibration_triplet = criterion_triplet_loss(calibration_embed_m, id_labels, m_labels)
+                        loss_calibration_triplet_frames = criterion_triplet_loss(
+                            calibration_embed.reshape(cal_b * cal_t, cal_c),
+                            id_labels.repeat_interleave(cal_t),
+                            m_labels.repeat_interleave(cal_t),
+                        )
+                        loss_calibration_triplet = (
+                            loss_calibration_triplet
+                            + args.triplet_frame_weight * loss_calibration_triplet_frames
+                        )
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -827,6 +888,10 @@ if __name__ == '__main__':
                 loss = loss + args.projection_triplet_weight * loss_projection_triplet
                 loss = loss + args.projection_mma_weight * loss_projection_mma
                 loss = loss + args.projection_gate_weight * loss_projection_gate
+            if args.use_m3plus and args.m3plus_mode == 'dual_calibrated_fusion':
+                loss = loss + args.calibration_id_weight * loss_calibration_id
+                loss = loss + args.calibration_triplet_weight * loss_calibration_triplet
+                loss = loss + args.calibration_mma_weight * loss_calibration_mma
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -876,6 +941,9 @@ if __name__ == '__main__':
                       f'loss_projection_triplet: {loss_projection_triplet.data:.4f} '
                       f'loss_projection_mma: {loss_projection_mma.data:.4f} '
                       f'loss_projection_gate: {loss_projection_gate.data:.4f} '
+                      f'loss_calibration_id: {loss_calibration_id.data:.4f} '
+                      f'loss_calibration_triplet: {loss_calibration_triplet.data:.4f} '
+                      f'loss_calibration_mma: {loss_calibration_mma.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -903,6 +971,9 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_projection_triplet', loss_projection_triplet.data, iter_num)
                 writer.add_scalar('metric/loss_projection_mma', loss_projection_mma.data, iter_num)
                 writer.add_scalar('metric/loss_projection_gate', loss_projection_gate.data, iter_num)
+                writer.add_scalar('metric/loss_calibration_id', loss_calibration_id.data, iter_num)
+                writer.add_scalar('metric/loss_calibration_triplet', loss_calibration_triplet.data, iter_num)
+                writer.add_scalar('metric/loss_calibration_mma', loss_calibration_mma.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
