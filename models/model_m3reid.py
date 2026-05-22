@@ -29,6 +29,7 @@ from models.modules.enhancement import AdaptiveFusionGate
 from models.modules.enhancement import GatedResidualFusion
 from models.modules.enhancement import PartGuidedAggregation
 from models.modules.enhancement import PartAwareTokenFusion
+from models.modules.enhancement import ReliabilityCalibratedPartFusion
 from models.modules.enhancement import TemporalEmbeddingRefinement
 
 
@@ -71,7 +72,8 @@ class M3ReID(nn.Module):
         if m3plus_mode not in (
             'full', 'part_only', 'local_residual', 'dual_fusion',
             'temporal_dual_fusion', 'adaptive_dual_fusion',
-            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
+            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
+            'reliability_part_fusion'
         ):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
@@ -79,7 +81,8 @@ class M3ReID(nn.Module):
         self.use_part_branch = use_enhancements and m3plus_mode in (
             'full', 'part_only', 'local_residual', 'dual_fusion',
             'temporal_dual_fusion', 'adaptive_dual_fusion',
-            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
+            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
+            'reliability_part_fusion'
         )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
         self.use_dual_fusion = use_enhancements and m3plus_mode in (
@@ -89,10 +92,12 @@ class M3ReID(nn.Module):
         self.use_supervised_dual_fusion = use_enhancements and m3plus_mode == 'supervised_dual_fusion'
         self.use_part_supervision = use_enhancements and m3plus_mode in (
             'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
-            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
+            'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
+            'reliability_part_fusion'
         )
         self.use_gated_residual_fusion = use_enhancements and m3plus_mode == 'gated_residual_fusion'
         self.use_part_token_fusion = use_enhancements and m3plus_mode == 'part_token_fusion'
+        self.use_reliability_part_fusion = use_enhancements and m3plus_mode == 'reliability_part_fusion'
         self.use_temporal_refine = use_enhancements and m3plus_mode == 'temporal_dual_fusion'
         self.use_adaptive_dual_fusion = use_enhancements and m3plus_mode == 'adaptive_dual_fusion'
         self.fusion_alpha = float(fusion_alpha)
@@ -145,6 +150,15 @@ class M3ReID(nn.Module):
                 self.part_classifier_frame = nn.Linear(part_dim, class_num, bias=False)
                 self.part_classifier = nn.Linear(part_dim, class_num, bias=False)
                 self.part_token_fusion = PartAwareTokenFusion(
+                    self.embedding_dim, part_dim, part_num=part_num
+                )
+            elif self.use_reliability_part_fusion:
+                self.part_bn_neck = nn.BatchNorm1d(part_dim)
+                nn.init.constant_(self.part_bn_neck.bias, 0)
+                self.part_bn_neck.bias.requires_grad_(False)
+                self.part_classifier_frame = nn.Linear(part_dim, class_num, bias=False)
+                self.part_classifier = nn.Linear(part_dim, class_num, bias=False)
+                self.reliability_part_fusion = ReliabilityCalibratedPartFusion(
                     self.embedding_dim, part_dim, part_num=part_num
                 )
             elif self.use_dual_fusion:
@@ -208,7 +222,7 @@ class M3ReID(nn.Module):
         part_prefixes = (
             'part_aggregation', 'part_bn_neck', 'part_classifier', 'temporal_refine',
             'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
-            'gated_residual_fusion', 'part_token_fusion',
+            'gated_residual_fusion', 'part_token_fusion', 'reliability_part_fusion',
         )
         for name, param in self.named_parameters():
             param.requires_grad_(trainable or name.startswith(part_prefixes))
@@ -322,6 +336,10 @@ class M3ReID(nn.Module):
             elif self.use_part_token_fusion:
                 x_pool, fusion_gate = self._checkpoint_if_enabled(
                     self.part_token_fusion, x_pool, part_pool
+                )
+            elif self.use_reliability_part_fusion:
+                x_pool, fusion_gate = self._checkpoint_if_enabled(
+                    self.reliability_part_fusion, x_pool, part_pool
                 )
             elif not self.use_dual_fusion:
                 x_pool = torch.cat([x_pool, part_pool], dim=1)

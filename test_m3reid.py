@@ -292,7 +292,7 @@ if __name__ == '__main__':
                         choices=['full', 'part_only', 'local_residual', 'dual_fusion',
                                  'temporal_dual_fusion', 'adaptive_dual_fusion',
                                  'supervised_dual_fusion', 'gated_residual_fusion',
-                                 'part_token_fusion'],
+                                 'part_token_fusion', 'reliability_part_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,

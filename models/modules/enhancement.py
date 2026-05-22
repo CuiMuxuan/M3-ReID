@@ -275,3 +275,81 @@ class PartAwareTokenFusion(nn.Module):
         residual = self.out(context)
         scale = torch.clamp(self.scale, min=0.0, max=self.max_scale)
         return global_embed + scale * residual, attn
+
+
+class ReliabilityCalibratedPartFusion(nn.Module):
+    """
+    Conservative global-local adapter for warm-started VI-ReID checkpoints.
+
+    The module keeps the original global descriptor as the main route, then adds
+    two bounded zero-initialized corrections: a low-rank global calibration
+    adapter and a reliability-weighted local part residual. The local residual is
+    projected away from the current global direction so it complements the
+    baseline representation instead of overwriting it.
+    """
+
+    def __init__(self, global_dim, part_dim, part_num=4, token_dim=256,
+                 adapter_dim=256, init_scale=0.04, max_scale=0.08):
+        super().__init__()
+        if part_num <= 0 or part_dim % part_num != 0:
+            raise ValueError('part_dim must be divisible by part_num.')
+        if token_dim <= 0 or adapter_dim <= 0:
+            raise ValueError('token_dim and adapter_dim must be positive.')
+        if not 0.0 < max_scale <= 1.0:
+            raise ValueError('max_scale must be in (0, 1].')
+
+        part_channels = part_dim // part_num
+        reliability_hidden = max(part_channels // 8, 32)
+        self.part_num = part_num
+        self.part_channels = part_channels
+        self.token_dim = token_dim
+        self.max_scale = float(max_scale)
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_channels)
+
+        self.global_down = nn.Linear(global_dim, adapter_dim, bias=False)
+        self.global_up = nn.Linear(adapter_dim, global_dim, bias=False)
+        self.global_act = nn.GELU()
+        self.global_scale = nn.Parameter(torch.tensor(float(init_scale)))
+
+        self.query = nn.Linear(global_dim, token_dim, bias=False)
+        self.key = nn.Linear(part_channels, token_dim, bias=False)
+        self.value = nn.Linear(part_channels, token_dim, bias=False)
+        self.local_out = nn.Linear(token_dim, global_dim, bias=False)
+        self.local_scale = nn.Parameter(torch.tensor(float(init_scale)))
+        self.part_reliability = nn.Sequential(
+            nn.Linear(part_channels, reliability_hidden, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reliability_hidden, 1, bias=True),
+            nn.Sigmoid(),
+        )
+
+        nn.init.zeros_(self.global_up.weight)
+        nn.init.zeros_(self.local_out.weight)
+
+    def _orthogonalize(self, residual, reference):
+        reference = F.normalize(reference.detach(), dim=1)
+        projection = (residual * reference).sum(dim=1, keepdim=True) * reference
+        return residual - projection
+
+    def forward(self, global_embed, part_embed):
+        global_norm = self.global_norm(global_embed)
+        global_delta = self.global_up(self.global_act(self.global_down(global_norm)))
+
+        parts = part_embed.reshape(part_embed.size(0), self.part_num, self.part_channels)
+        parts = self.part_norm(parts)
+        reliability = self.part_reliability(parts).squeeze(-1)
+        query = self.query(global_norm).unsqueeze(1)
+        key = self.key(parts)
+        attn_logits = (query * key).sum(dim=-1) / math.sqrt(self.token_dim)
+        attn = torch.softmax(attn_logits + torch.log(reliability.clamp_min(1e-6)), dim=1)
+        value = self.value(parts)
+        context = (attn.unsqueeze(-1) * value).sum(dim=1)
+        local_delta = self._orthogonalize(self.local_out(context), global_embed)
+
+        global_scale = torch.clamp(self.global_scale, min=0.0, max=self.max_scale)
+        local_scale = torch.clamp(self.local_scale, min=0.0, max=self.max_scale)
+        fused = global_embed + global_scale * global_delta + local_scale * local_delta
+        reliability_score = (attn * reliability).sum(dim=1, keepdim=True)
+        return fused, reliability_score

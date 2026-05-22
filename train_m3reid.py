@@ -112,7 +112,7 @@ def build_train_params(args, model):
     part_prefixes = (
         'part_aggregation', 'part_bn_neck', 'part_classifier',
         'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
-        'gated_residual_fusion', 'part_token_fusion',
+        'gated_residual_fusion', 'part_token_fusion', 'reliability_part_fusion',
     )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
@@ -193,7 +193,7 @@ if __name__ == '__main__':
                         choices=['full', 'part_only', 'local_residual', 'dual_fusion',
                                  'temporal_dual_fusion', 'adaptive_dual_fusion',
                                  'supervised_dual_fusion', 'gated_residual_fusion',
-                                 'part_token_fusion'],
+                                 'part_token_fusion', 'reliability_part_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -493,7 +493,8 @@ if __name__ == '__main__':
         ).cuda()
     part_supervision_modes = (
         'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
-        'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion'
+        'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
+        'reliability_part_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
