@@ -294,7 +294,8 @@ if __name__ == '__main__':
                                  'supervised_dual_fusion', 'gated_residual_fusion',
                                  'part_token_fusion', 'reliability_part_fusion',
                                  'bidirectional_calibration',
-                                 'invariant_specific_calibration'],
+                                 'invariant_specific_calibration',
+                                 'anchor_projection_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,

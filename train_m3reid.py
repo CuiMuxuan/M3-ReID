@@ -115,6 +115,7 @@ def build_train_params(args, model):
         'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
         'gated_residual_fusion', 'part_token_fusion', 'reliability_part_fusion',
         'bidirectional_calibration', 'invariant_specific_calibration',
+        'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
     )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
@@ -212,7 +213,8 @@ if __name__ == '__main__':
                                  'supervised_dual_fusion', 'gated_residual_fusion',
                                  'part_token_fusion', 'reliability_part_fusion',
                                  'bidirectional_calibration',
-                                 'invariant_specific_calibration'],
+                                 'invariant_specific_calibration',
+                                 'anchor_projection_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -299,6 +301,12 @@ if __name__ == '__main__':
                         help='Weight of SchemeU modality-adversarial invariant supervision')
     parser.add_argument('--invariant_consistency_weight', default=0.0, type=float,
                         help='Weight of SchemeU same-ID cross-modality invariant consistency loss')
+    parser.add_argument('--projection_id_weight', default=0.0, type=float,
+                        help='Weight of SchemeV projection subspace ID loss')
+    parser.add_argument('--projection_triplet_weight', default=0.0, type=float,
+                        help='Weight of SchemeV projection subspace cross-modality triplet loss')
+    parser.add_argument('--projection_mma_weight', default=0.0, type=float,
+                        help='Weight of SchemeV projection subspace modality alignment loss')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -520,7 +528,7 @@ if __name__ == '__main__':
         'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
         'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
         'reliability_part_fusion', 'bidirectional_calibration',
-        'invariant_specific_calibration'
+        'invariant_specific_calibration', 'anchor_projection_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -578,6 +586,9 @@ if __name__ == '__main__':
           f'router_weight={args.router_weight}, '
           f'modality_adv_weight={args.modality_adv_weight}, '
           f'invariant_consistency_weight={args.invariant_consistency_weight}, '
+          f'projection_id_weight={args.projection_id_weight}, '
+          f'projection_triplet_weight={args.projection_triplet_weight}, '
+          f'projection_mma_weight={args.projection_mma_weight}, '
           f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
           f'lr_milestones={lr_milestones}')
 
@@ -673,6 +684,9 @@ if __name__ == '__main__':
                 loss_router = x_embed_m.new_zeros(())
                 loss_modality_adv = x_embed_m.new_zeros(())
                 loss_invariant_consistency = x_embed_m.new_zeros(())
+                loss_projection_id = x_embed_m.new_zeros(())
+                loss_projection_triplet = x_embed_m.new_zeros(())
+                loss_projection_mma = x_embed_m.new_zeros(())
                 proto_enabled = epoch + 1 >= args.proto_start_epoch
                 cross_proto_enabled = epoch + 1 >= args.cross_proto_start_epoch
                 cosface_enabled = epoch + 1 >= args.cosface_start_epoch
@@ -736,6 +750,27 @@ if __name__ == '__main__':
                         loss_invariant_consistency = cross_modality_identity_consistency(
                             part_aux['invariant_embed_mean'], id_labels, m_labels
                         )
+                    if 'projection_embed_mean' in part_aux:
+                        projection_embed = part_aux['projection_embed']
+                        projection_embed_m = part_aux['projection_embed_mean']
+                        projection_logits_m = part_aux['projection_logits_mean']
+                        proj_b, proj_t, proj_c = projection_embed.shape
+                        loss_projection_id = criterion_ce_loss(projection_logits_m, labels)
+                        loss_projection_mma = criterion_mma_loss(projection_embed_m, id_labels, m_labels)
+                        loss_projection_mma = loss_projection_mma + criterion_mma_loss(
+                            projection_embed.reshape(proj_b * proj_t, proj_c),
+                            id_labels.repeat_interleave(proj_t),
+                            m_labels.repeat_interleave(proj_t),
+                        )
+                        loss_projection_triplet = criterion_triplet_loss(projection_embed_m, id_labels, m_labels)
+                        loss_projection_triplet_frames = criterion_triplet_loss(
+                            projection_embed.reshape(proj_b * proj_t, proj_c),
+                            id_labels.repeat_interleave(proj_t),
+                            m_labels.repeat_interleave(proj_t),
+                        )
+                        loss_projection_triplet = (
+                            loss_projection_triplet + args.triplet_frame_weight * loss_projection_triplet_frames
+                        )
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -765,6 +800,10 @@ if __name__ == '__main__':
             if args.use_m3plus and args.m3plus_mode == 'invariant_specific_calibration':
                 loss = loss + args.modality_adv_weight * loss_modality_adv
                 loss = loss + args.invariant_consistency_weight * loss_invariant_consistency
+            if args.use_m3plus and args.m3plus_mode == 'anchor_projection_fusion':
+                loss = loss + args.projection_id_weight * loss_projection_id
+                loss = loss + args.projection_triplet_weight * loss_projection_triplet
+                loss = loss + args.projection_mma_weight * loss_projection_mma
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -810,6 +849,9 @@ if __name__ == '__main__':
                       f'loss_router: {loss_router.data:.4f} '
                       f'loss_modality_adv: {loss_modality_adv.data:.4f} '
                       f'loss_invariant_consistency: {loss_invariant_consistency.data:.4f} '
+                      f'loss_projection_id: {loss_projection_id.data:.4f} '
+                      f'loss_projection_triplet: {loss_projection_triplet.data:.4f} '
+                      f'loss_projection_mma: {loss_projection_mma.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -833,6 +875,9 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_router', loss_router.data, iter_num)
                 writer.add_scalar('metric/loss_modality_adv', loss_modality_adv.data, iter_num)
                 writer.add_scalar('metric/loss_invariant_consistency', loss_invariant_consistency.data, iter_num)
+                writer.add_scalar('metric/loss_projection_id', loss_projection_id.data, iter_num)
+                writer.add_scalar('metric/loss_projection_triplet', loss_projection_triplet.data, iter_num)
+                writer.add_scalar('metric/loss_projection_mma', loss_projection_mma.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 

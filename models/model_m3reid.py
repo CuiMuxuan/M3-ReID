@@ -32,6 +32,7 @@ from models.modules.enhancement import PartAwareTokenFusion
 from models.modules.enhancement import ReliabilityCalibratedPartFusion
 from models.modules.enhancement import BidirectionalModalityCalibration
 from models.modules.enhancement import ModalityInvariantSpecificCalibration
+from models.modules.enhancement import AnchorPreservingProjectionFusion
 from models.modules.enhancement import TemporalEmbeddingRefinement
 
 
@@ -76,7 +77,7 @@ class M3ReID(nn.Module):
             'temporal_dual_fusion', 'adaptive_dual_fusion',
             'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
             'reliability_part_fusion', 'bidirectional_calibration',
-            'invariant_specific_calibration'
+            'invariant_specific_calibration', 'anchor_projection_fusion'
         ):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
@@ -86,7 +87,7 @@ class M3ReID(nn.Module):
             'temporal_dual_fusion', 'adaptive_dual_fusion',
             'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
             'reliability_part_fusion', 'bidirectional_calibration',
-            'invariant_specific_calibration'
+            'invariant_specific_calibration', 'anchor_projection_fusion'
         )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
         self.use_dual_fusion = use_enhancements and m3plus_mode in (
@@ -98,7 +99,7 @@ class M3ReID(nn.Module):
             'dual_fusion', 'temporal_dual_fusion', 'adaptive_dual_fusion',
             'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
             'reliability_part_fusion', 'bidirectional_calibration',
-            'invariant_specific_calibration'
+            'invariant_specific_calibration', 'anchor_projection_fusion'
         )
         self.use_gated_residual_fusion = use_enhancements and m3plus_mode == 'gated_residual_fusion'
         self.use_part_token_fusion = use_enhancements and m3plus_mode == 'part_token_fusion'
@@ -107,6 +108,7 @@ class M3ReID(nn.Module):
         self.use_invariant_specific_calibration = (
             use_enhancements and m3plus_mode == 'invariant_specific_calibration'
         )
+        self.use_anchor_projection_fusion = use_enhancements and m3plus_mode == 'anchor_projection_fusion'
         self.use_temporal_refine = use_enhancements and m3plus_mode == 'temporal_dual_fusion'
         self.use_adaptive_dual_fusion = use_enhancements and m3plus_mode == 'adaptive_dual_fusion'
         self.fusion_alpha = float(fusion_alpha)
@@ -188,6 +190,20 @@ class M3ReID(nn.Module):
                 self.invariant_specific_calibration = ModalityInvariantSpecificCalibration(
                     self.embedding_dim, part_dim
                 )
+            elif self.use_anchor_projection_fusion:
+                self.projection_dim = 512
+                self.part_bn_neck = nn.BatchNorm1d(part_dim)
+                nn.init.constant_(self.part_bn_neck.bias, 0)
+                self.part_bn_neck.bias.requires_grad_(False)
+                self.part_classifier_frame = nn.Linear(part_dim, class_num, bias=False)
+                self.part_classifier = nn.Linear(part_dim, class_num, bias=False)
+                self.projection_bn_neck = nn.BatchNorm1d(self.projection_dim)
+                nn.init.constant_(self.projection_bn_neck.bias, 0)
+                self.projection_bn_neck.bias.requires_grad_(False)
+                self.projection_classifier = nn.Linear(self.projection_dim, class_num, bias=False)
+                self.anchor_projection_fusion = AnchorPreservingProjectionFusion(
+                    self.embedding_dim, part_dim, projection_dim=self.projection_dim
+                )
             elif self.use_dual_fusion:
                 self.part_bn_neck = nn.BatchNorm1d(part_dim)
                 nn.init.constant_(self.part_bn_neck.bias, 0)
@@ -220,7 +236,12 @@ class M3ReID(nn.Module):
         self.classifier = nn.Linear(self.embedding_dim, class_num, bias=False)
 
         self.l2_norm = Normalize(power=2)
-        self.output_dim = self.embedding_dim + part_dim if self.use_dual_fusion else self.embedding_dim
+        if self.use_dual_fusion:
+            self.output_dim = self.embedding_dim + part_dim
+        elif self.use_anchor_projection_fusion:
+            self.output_dim = self.embedding_dim + self.projection_dim
+        else:
+            self.output_dim = self.embedding_dim
 
     def _checkpoint_if_enabled(self, fn, *args):
         if self.training and self.grad_checkpoint_head:
@@ -251,6 +272,7 @@ class M3ReID(nn.Module):
             'adaptive_fusion_gate', 'fusion_bn_neck', 'fusion_classifier',
             'gated_residual_fusion', 'part_token_fusion', 'reliability_part_fusion',
             'bidirectional_calibration', 'invariant_specific_calibration',
+            'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
         )
         for name, param in self.named_parameters():
             param.requires_grad_(trainable or name.startswith(part_prefixes))
@@ -356,6 +378,7 @@ class M3ReID(nn.Module):
         router_logits = None
         invariant_pool = None
         modality_logits = None
+        projection_pool = None
         if self.use_part_branch:
             part_pool = self._checkpoint_if_enabled(self.part_aggregation, global_feat)
             if self.use_local_residual:
@@ -379,6 +402,10 @@ class M3ReID(nn.Module):
             elif self.use_invariant_specific_calibration:
                 x_pool, router_logits, fusion_gate, invariant_pool, modality_logits = self._checkpoint_if_enabled(
                     self.invariant_specific_calibration, x_pool, part_pool
+                )
+            elif self.use_anchor_projection_fusion:
+                projection_pool, fusion_gate = self._checkpoint_if_enabled(
+                    self.anchor_projection_fusion, x_pool, part_pool
                 )
             elif not self.use_dual_fusion:
                 x_pool = torch.cat([x_pool, part_pool], dim=1)
@@ -427,6 +454,15 @@ class M3ReID(nn.Module):
                 if self.use_invariant_specific_calibration:
                     aux['invariant_embed_mean'] = invariant_pool.reshape(-1, t, invariant_pool.shape[-1]).mean(dim=1)
                     aux['modality_logits'] = modality_logits.reshape(-1, t, modality_logits.shape[-1]).mean(dim=1)
+                if self.use_anchor_projection_fusion:
+                    projection_embed = self.projection_bn_neck(projection_pool)
+                    projection_embed = projection_embed.reshape(-1, t, projection_embed.shape[-1])
+                    projection_embed_mean = torch.mean(projection_embed, dim=1)
+                    aux['projection_embed'] = projection_embed
+                    aux['projection_embed_mean'] = projection_embed_mean
+                    aux['projection_logits_mean'] = self.projection_classifier(
+                        self.feature_dropout(projection_embed_mean)
+                    )
                 if self.use_adaptive_dual_fusion or self.use_supervised_dual_fusion:
                     if self.use_adaptive_dual_fusion:
                         fusion_embed_mean, fusion_gate_mean = self._adaptive_fusion(x_embed_mean, part_embed_mean)
@@ -445,4 +481,9 @@ class M3ReID(nn.Module):
                 if self.use_adaptive_dual_fusion:
                     return self._adaptive_fusion(x_embed_mean, part_aux[1])[0]
                 return self._fixed_dual_fusion(x_embed_mean, part_aux[1])[0]
+            if self.use_anchor_projection_fusion:
+                projection_embed = projection_pool.reshape(-1, t, projection_pool.shape[-1]).mean(dim=1)
+                global_eval = self.l2_norm(x_embed_mean) * ((1.0 - self.fusion_alpha) ** 0.5)
+                projection_eval = self.l2_norm(projection_embed) * (self.fusion_alpha ** 0.5)
+                return torch.cat([global_eval, projection_eval], dim=1)
             return self.l2_norm(x_embed_mean)

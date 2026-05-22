@@ -529,3 +529,60 @@ class ModalityInvariantSpecificCalibration(nn.Module):
         reversed_embed = _GradientReverse.apply(invariant_embed, self.grl_scale)
         modality_logits = self.modality_classifier(reversed_embed)
         return fused, router_logits, rgb_prob, invariant_embed, modality_logits
+
+
+class AnchorPreservingProjectionFusion(nn.Module):
+    """
+    Build a compact cross-modal projection without overwriting the baseline
+    global embedding. The projection starts from a deterministic pooled anchor of
+    the global descriptor, then learns bounded global and part-conditioned
+    residual corrections for the appended retrieval subspace.
+    """
+
+    def __init__(self, global_dim, part_dim, projection_dim=512, hidden_dim=256,
+                 init_scale=0.02, max_scale=0.08):
+        super().__init__()
+        if projection_dim <= 0 or hidden_dim <= 0:
+            raise ValueError('projection_dim and hidden_dim must be positive.')
+        if not 0.0 < max_scale <= 1.0:
+            raise ValueError('max_scale must be in (0, 1].')
+
+        self.projection_dim = int(projection_dim)
+        self.max_scale = float(max_scale)
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.global_delta = nn.Linear(global_dim, projection_dim, bias=False)
+        self.part_delta = nn.Linear(part_dim, projection_dim, bias=False)
+        self.gate = nn.Sequential(
+            nn.Linear(global_dim + part_dim, hidden_dim, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 1, bias=True),
+            nn.Sigmoid(),
+        )
+        self.global_scale = nn.Parameter(torch.tensor(float(init_scale)))
+        self.part_scale = nn.Parameter(torch.tensor(float(init_scale)))
+
+        nn.init.zeros_(self.global_delta.weight)
+        nn.init.zeros_(self.part_delta.weight)
+        nn.init.zeros_(self.gate[-2].weight)
+        nn.init.zeros_(self.gate[-2].bias)
+
+    def _anchor_pool(self, x):
+        return F.adaptive_avg_pool1d(x.unsqueeze(1), self.projection_dim).squeeze(1)
+
+    def forward(self, global_embed, part_embed):
+        global_norm = self.global_norm(global_embed)
+        part_norm = self.part_norm(part_embed)
+        global_anchor = self._anchor_pool(global_norm)
+        part_anchor = self._anchor_pool(part_norm)
+        gate_input = torch.cat([global_norm, part_norm], dim=1)
+        gate = self.gate(gate_input)
+
+        global_scale = torch.clamp(self.global_scale, min=0.0, max=self.max_scale)
+        part_scale = torch.clamp(self.part_scale, min=0.0, max=self.max_scale)
+        projection = (
+            global_anchor
+            + global_scale * self.global_delta(global_norm)
+            + part_scale * gate * (part_anchor + self.part_delta(part_norm))
+        )
+        return projection, gate
