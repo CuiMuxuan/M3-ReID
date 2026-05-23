@@ -586,3 +586,75 @@ class AnchorPreservingProjectionFusion(nn.Module):
             + part_scale * gate * (part_anchor + self.part_delta(part_norm))
         )
         return projection, gate
+
+
+class AdaptiveProjectionCalibrationGate(nn.Module):
+    """
+    Predict sample-wise retrieval weights for projection and calibration branches.
+
+    The gate is part of the embedding network rather than a post-processing step:
+    it receives the three branch descriptors and returns bounded projection and
+    calibration weights used before the final embedding is emitted.
+    """
+
+    def __init__(self, global_dim, projection_dim, calibration_dim=None, hidden_dim=64,
+                 init_projection_alpha=0.02, init_calibration_alpha=0.005,
+                 max_projection_alpha=None, max_calibration_alpha=None):
+        super().__init__()
+        if hidden_dim <= 0:
+            raise ValueError('hidden_dim must be positive.')
+        if projection_dim <= 0:
+            raise ValueError('projection_dim must be positive.')
+
+        calibration_dim = global_dim if calibration_dim is None else calibration_dim
+        max_projection_alpha = (
+            max(float(init_projection_alpha) * 2.0, 1e-4)
+            if max_projection_alpha is None else float(max_projection_alpha)
+        )
+        max_calibration_alpha = (
+            max(float(init_calibration_alpha) * 2.0, 1e-4)
+            if max_calibration_alpha is None else float(max_calibration_alpha)
+        )
+        if max_projection_alpha <= 0 or max_calibration_alpha <= 0:
+            raise ValueError('maximum branch weights must be positive.')
+
+        self.register_buffer('max_projection_alpha', torch.tensor(max_projection_alpha))
+        self.register_buffer('max_calibration_alpha', torch.tensor(max_calibration_alpha))
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.projection_norm = nn.LayerNorm(projection_dim)
+        self.calibration_norm = nn.LayerNorm(calibration_dim)
+        self.global_reduce = nn.Linear(global_dim, hidden_dim, bias=False)
+        self.projection_reduce = nn.Linear(projection_dim, hidden_dim, bias=False)
+        self.calibration_reduce = nn.Linear(calibration_dim, hidden_dim, bias=False)
+        self.gate = nn.Sequential(
+            nn.LayerNorm(hidden_dim * 3),
+            nn.Linear(hidden_dim * 3, hidden_dim, bias=False),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 2, bias=True),
+        )
+
+        projection_ratio = float(init_projection_alpha) / max_projection_alpha
+        calibration_ratio = float(init_calibration_alpha) / max_calibration_alpha
+        projection_ratio = min(max(projection_ratio, 1e-4), 1.0 - 1e-4)
+        calibration_ratio = min(max(calibration_ratio, 1e-4), 1.0 - 1e-4)
+        init_bias = torch.tensor([
+            math.log(projection_ratio / (1.0 - projection_ratio)),
+            math.log(calibration_ratio / (1.0 - calibration_ratio)),
+        ])
+        nn.init.zeros_(self.gate[-1].weight)
+        with torch.no_grad():
+            self.gate[-1].bias.copy_(init_bias)
+
+    def forward(self, global_embed, projection_embed, calibration_embed):
+        branch_summary = torch.cat([
+            self.global_reduce(self.global_norm(global_embed)),
+            self.projection_reduce(self.projection_norm(projection_embed)),
+            self.calibration_reduce(self.calibration_norm(calibration_embed)),
+        ], dim=1)
+        gate = torch.sigmoid(self.gate(branch_summary))
+        projection_alpha = gate[:, 0:1] * self.max_projection_alpha
+        calibration_alpha = gate[:, 1:2] * self.max_calibration_alpha
+        branch_sum = projection_alpha + calibration_alpha
+        scale = ((1.0 - 1e-6) / branch_sum.clamp_min(1e-6)).clamp(max=1.0)
+        return projection_alpha * scale, calibration_alpha * scale

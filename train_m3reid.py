@@ -117,6 +117,8 @@ def build_train_params(args, model):
         'bidirectional_calibration', 'invariant_specific_calibration',
         'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
         'dual_calibration_fusion', 'calibration_bn_neck', 'calibration_classifier',
+        'adaptive_projection_calibration_gate', 'adaptive_projection_bn_neck',
+        'adaptive_projection_classifier',
     )
     temporal_prefixes = ('temporal_refine',)
     base_params, part_params, temporal_params = [], [], []
@@ -217,7 +219,8 @@ if __name__ == '__main__':
                                  'invariant_specific_calibration',
                                  'anchor_projection_fusion',
                                  'dual_calibrated_fusion',
-                                 'projection_calibrated_fusion'],
+                                 'projection_calibrated_fusion',
+                                 'adaptive_projection_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -324,6 +327,12 @@ if __name__ == '__main__':
                         help='Weight of SchemeW calibrated global branch cross-modality triplet loss')
     parser.add_argument('--calibration_mma_weight', default=0.0, type=float,
                         help='Weight of SchemeW calibrated global branch modality alignment loss')
+    parser.add_argument('--branch_gate_weight', default=0.0, type=float,
+                        help='Weight of SchemeY adaptive projection/calibration branch gate anchoring')
+    parser.add_argument('--projection_alpha_target', default=None, type=float,
+                        help='Target projection branch weight for SchemeY adaptive gate. Defaults to fusion_alpha')
+    parser.add_argument('--calibration_alpha_target', default=None, type=float,
+                        help='Target calibration branch weight for SchemeY adaptive gate. Defaults to calibration_alpha')
     parser.add_argument('--log_interval', default=10, type=int, help='Interval of logging')
     parser.add_argument('--test_interval', default=1, type=int, help='Interval of testing. Set 0 to disable')
     parser.add_argument('--eval_start_epoch', default=1, type=int,
@@ -512,7 +521,11 @@ if __name__ == '__main__':
             print(f'Missing keys preview: {load_result.missing_keys[:12]}')
         if load_result.unexpected_keys:
             print(f'Unexpected keys preview: {load_result.unexpected_keys[:12]}')
-        if args.m3plus_mode in ('dual_calibrated_fusion', 'projection_calibrated_fusion'):
+        if args.m3plus_mode in (
+            'dual_calibrated_fusion',
+            'projection_calibrated_fusion',
+            'adaptive_projection_calibrated_fusion',
+        ):
             missing = set(load_result.missing_keys)
             with torch.no_grad():
                 if 'calibration_bn_neck.weight' in missing:
@@ -563,7 +576,8 @@ if __name__ == '__main__':
         'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
         'reliability_part_fusion', 'bidirectional_calibration',
         'invariant_specific_calibration', 'anchor_projection_fusion',
-        'dual_calibrated_fusion', 'projection_calibrated_fusion'
+        'dual_calibrated_fusion', 'projection_calibrated_fusion',
+        'adaptive_projection_calibrated_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -631,6 +645,7 @@ if __name__ == '__main__':
           f'calibration_id_weight={args.calibration_id_weight}, '
           f'calibration_triplet_weight={args.calibration_triplet_weight}, '
           f'calibration_mma_weight={args.calibration_mma_weight}, '
+          f'branch_gate_weight={args.branch_gate_weight}, '
           f'grad_checkpoint_head={args.grad_checkpoint_head}, optimizer={args.optimizer}, '
           f'lr_milestones={lr_milestones}')
 
@@ -733,6 +748,7 @@ if __name__ == '__main__':
                 loss_calibration_id = x_embed_m.new_zeros(())
                 loss_calibration_triplet = x_embed_m.new_zeros(())
                 loss_calibration_mma = x_embed_m.new_zeros(())
+                loss_branch_gate = x_embed_m.new_zeros(())
                 proto_enabled = epoch + 1 >= args.proto_start_epoch
                 cross_proto_enabled = epoch + 1 >= args.cross_proto_start_epoch
                 cosface_enabled = epoch + 1 >= args.cosface_start_epoch
@@ -860,6 +876,23 @@ if __name__ == '__main__':
                             loss_calibration_triplet
                             + args.triplet_frame_weight * loss_calibration_triplet_frames
                         )
+                    if 'projection_alpha' in part_aux and 'calibration_alpha' in part_aux:
+                        projection_target = args.projection_alpha_target
+                        if projection_target is None:
+                            projection_target = args.fusion_alpha
+                        calibration_target = args.calibration_alpha_target
+                        if calibration_target is None:
+                            calibration_target = args.calibration_alpha
+                        projection_targets = part_aux['projection_alpha'].new_full(
+                            part_aux['projection_alpha'].shape, projection_target
+                        )
+                        calibration_targets = part_aux['calibration_alpha'].new_full(
+                            part_aux['calibration_alpha'].shape, calibration_target
+                        )
+                        loss_branch_gate = F.mse_loss(part_aux['projection_alpha'], projection_targets)
+                        loss_branch_gate = loss_branch_gate + F.mse_loss(
+                            part_aux['calibration_alpha'], calibration_targets
+                        )
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -890,18 +923,22 @@ if __name__ == '__main__':
                 loss = loss + args.modality_adv_weight * loss_modality_adv
                 loss = loss + args.invariant_consistency_weight * loss_invariant_consistency
             if args.use_m3plus and args.m3plus_mode in (
-                'anchor_projection_fusion', 'projection_calibrated_fusion'
+                'anchor_projection_fusion', 'projection_calibrated_fusion',
+                'adaptive_projection_calibrated_fusion'
             ):
                 loss = loss + args.projection_id_weight * loss_projection_id
                 loss = loss + args.projection_triplet_weight * loss_projection_triplet
                 loss = loss + args.projection_mma_weight * loss_projection_mma
                 loss = loss + args.projection_gate_weight * loss_projection_gate
             if args.use_m3plus and args.m3plus_mode in (
-                'dual_calibrated_fusion', 'projection_calibrated_fusion'
+                'dual_calibrated_fusion', 'projection_calibrated_fusion',
+                'adaptive_projection_calibrated_fusion'
             ):
                 loss = loss + args.calibration_id_weight * loss_calibration_id
                 loss = loss + args.calibration_triplet_weight * loss_calibration_triplet
                 loss = loss + args.calibration_mma_weight * loss_calibration_mma
+            if args.use_m3plus and args.m3plus_mode == 'adaptive_projection_calibrated_fusion':
+                loss = loss + args.branch_gate_weight * loss_branch_gate
 
             backward_loss = loss / args.accum_steps
             if args.fp16:
@@ -954,6 +991,7 @@ if __name__ == '__main__':
                       f'loss_calibration_id: {loss_calibration_id.data:.4f} '
                       f'loss_calibration_triplet: {loss_calibration_triplet.data:.4f} '
                       f'loss_calibration_mma: {loss_calibration_mma.data:.4f} '
+                      f'loss_branch_gate: {loss_branch_gate.data:.4f} '
                       f'loss_ofr: {loss_ofr.data:.4f} '
                       f'loss_dac: {loss_dac.data:.4f} '
                       )
@@ -984,6 +1022,7 @@ if __name__ == '__main__':
                 writer.add_scalar('metric/loss_calibration_id', loss_calibration_id.data, iter_num)
                 writer.add_scalar('metric/loss_calibration_triplet', loss_calibration_triplet.data, iter_num)
                 writer.add_scalar('metric/loss_calibration_mma', loss_calibration_mma.data, iter_num)
+                writer.add_scalar('metric/loss_branch_gate', loss_branch_gate.data, iter_num)
                 writer.add_scalar('metric/loss_ofr', loss_ofr.data, iter_num)
                 writer.add_scalar('metric/loss_dac', loss_dac.data, iter_num)
 
