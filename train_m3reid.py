@@ -219,6 +219,7 @@ if __name__ == '__main__':
                                  'invariant_specific_calibration',
                                  'anchor_projection_fusion',
                                  'dual_calibrated_fusion',
+                                 'temporal_dual_calibrated_fusion',
                                  'projection_calibrated_fusion',
                                  'adaptive_projection_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
@@ -523,6 +524,7 @@ if __name__ == '__main__':
             print(f'Unexpected keys preview: {load_result.unexpected_keys[:12]}')
         if args.m3plus_mode in (
             'dual_calibrated_fusion',
+            'temporal_dual_calibrated_fusion',
             'projection_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
         ):
@@ -576,7 +578,8 @@ if __name__ == '__main__':
         'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
         'reliability_part_fusion', 'bidirectional_calibration',
         'invariant_specific_calibration', 'anchor_projection_fusion',
-        'dual_calibrated_fusion', 'projection_calibrated_fusion',
+        'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
+        'projection_calibrated_fusion',
         'adaptive_projection_calibrated_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
@@ -931,7 +934,8 @@ if __name__ == '__main__':
                 loss = loss + args.projection_mma_weight * loss_projection_mma
                 loss = loss + args.projection_gate_weight * loss_projection_gate
             if args.use_m3plus and args.m3plus_mode in (
-                'dual_calibrated_fusion', 'projection_calibrated_fusion',
+                'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
+                'projection_calibrated_fusion',
                 'adaptive_projection_calibrated_fusion'
             ):
                 loss = loss + args.calibration_id_weight * loss_calibration_id

@@ -297,6 +297,7 @@ if __name__ == '__main__':
                                  'invariant_specific_calibration',
                                  'anchor_projection_fusion',
                                  'dual_calibrated_fusion',
+                                 'temporal_dual_calibrated_fusion',
                                  'projection_calibrated_fusion',
                                  'adaptive_projection_calibrated_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')

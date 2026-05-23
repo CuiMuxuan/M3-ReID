@@ -79,7 +79,8 @@ class M3ReID(nn.Module):
             'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
             'reliability_part_fusion', 'bidirectional_calibration',
             'invariant_specific_calibration', 'anchor_projection_fusion',
-            'dual_calibrated_fusion', 'projection_calibrated_fusion',
+            'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
+            'projection_calibrated_fusion',
             'adaptive_projection_calibrated_fusion'
         ):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
@@ -91,7 +92,8 @@ class M3ReID(nn.Module):
             'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
             'reliability_part_fusion', 'bidirectional_calibration',
             'invariant_specific_calibration', 'anchor_projection_fusion',
-            'dual_calibrated_fusion', 'projection_calibrated_fusion',
+            'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
+            'projection_calibrated_fusion',
             'adaptive_projection_calibrated_fusion'
         )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
@@ -105,7 +107,8 @@ class M3ReID(nn.Module):
             'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
             'reliability_part_fusion', 'bidirectional_calibration',
             'invariant_specific_calibration', 'anchor_projection_fusion',
-            'dual_calibrated_fusion', 'projection_calibrated_fusion',
+            'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
+            'projection_calibrated_fusion',
             'adaptive_projection_calibrated_fusion'
         )
         self.use_gated_residual_fusion = use_enhancements and m3plus_mode == 'gated_residual_fusion'
@@ -116,14 +119,22 @@ class M3ReID(nn.Module):
             use_enhancements and m3plus_mode == 'invariant_specific_calibration'
         )
         self.use_anchor_projection_fusion = use_enhancements and m3plus_mode == 'anchor_projection_fusion'
-        self.use_dual_calibrated_fusion = use_enhancements and m3plus_mode == 'dual_calibrated_fusion'
+        self.use_dual_calibrated_fusion = (
+            use_enhancements and m3plus_mode in (
+                'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion'
+            )
+        )
         self.use_projection_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'projection_calibrated_fusion'
         )
         self.use_adaptive_projection_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'adaptive_projection_calibrated_fusion'
         )
-        self.use_temporal_refine = use_enhancements and m3plus_mode == 'temporal_dual_fusion'
+        self.use_temporal_refine = (
+            use_enhancements and m3plus_mode in (
+                'temporal_dual_fusion', 'temporal_dual_calibrated_fusion'
+            )
+        )
         self.use_adaptive_dual_fusion = use_enhancements and m3plus_mode == 'adaptive_dual_fusion'
         self.fusion_alpha = float(fusion_alpha)
         self.calibration_alpha = float(calibration_alpha)
