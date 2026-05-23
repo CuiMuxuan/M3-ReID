@@ -216,7 +216,8 @@ if __name__ == '__main__':
                                  'bidirectional_calibration',
                                  'invariant_specific_calibration',
                                  'anchor_projection_fusion',
-                                 'dual_calibrated_fusion'],
+                                 'dual_calibrated_fusion',
+                                 'projection_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -511,7 +512,7 @@ if __name__ == '__main__':
             print(f'Missing keys preview: {load_result.missing_keys[:12]}')
         if load_result.unexpected_keys:
             print(f'Unexpected keys preview: {load_result.unexpected_keys[:12]}')
-        if args.m3plus_mode == 'dual_calibrated_fusion':
+        if args.m3plus_mode in ('dual_calibrated_fusion', 'projection_calibrated_fusion'):
             missing = set(load_result.missing_keys)
             with torch.no_grad():
                 if 'calibration_bn_neck.weight' in missing:
@@ -526,7 +527,7 @@ if __name__ == '__main__':
                     model.calibration_classifier.weight.copy_(model.classifier.weight)
                 if 'calibration_classifier_frame.weight' in missing:
                     model.calibration_classifier_frame.weight.copy_(model.classifier_frame.weight)
-            print('SchemeW init: copied global BN/classifier into calibration branch for warm start.')
+            print('SchemeW/X init: copied global BN/classifier into calibration branch for warm start.')
 
     # Loss -------------------------------------------------------------------------------------------------------------
     label_smoothing = args.id_label_smoothing
@@ -562,7 +563,7 @@ if __name__ == '__main__':
         'supervised_dual_fusion', 'gated_residual_fusion', 'part_token_fusion',
         'reliability_part_fusion', 'bidirectional_calibration',
         'invariant_specific_calibration', 'anchor_projection_fusion',
-        'dual_calibrated_fusion'
+        'dual_calibrated_fusion', 'projection_calibrated_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -818,8 +819,13 @@ if __name__ == '__main__':
                         loss_projection_triplet = (
                             loss_projection_triplet + args.triplet_frame_weight * loss_projection_triplet_frames
                         )
-                        if 'fusion_gate' in part_aux:
+                        if 'projection_gate' in part_aux:
+                            projection_gate = part_aux['projection_gate']
+                        elif 'fusion_gate' in part_aux:
                             projection_gate = part_aux['fusion_gate']
+                        else:
+                            projection_gate = None
+                        if projection_gate is not None:
                             ir_targets = projection_gate.new_full(
                                 projection_gate.shape, args.projection_gate_ir_target
                             )
@@ -883,12 +889,16 @@ if __name__ == '__main__':
             if args.use_m3plus and args.m3plus_mode == 'invariant_specific_calibration':
                 loss = loss + args.modality_adv_weight * loss_modality_adv
                 loss = loss + args.invariant_consistency_weight * loss_invariant_consistency
-            if args.use_m3plus and args.m3plus_mode == 'anchor_projection_fusion':
+            if args.use_m3plus and args.m3plus_mode in (
+                'anchor_projection_fusion', 'projection_calibrated_fusion'
+            ):
                 loss = loss + args.projection_id_weight * loss_projection_id
                 loss = loss + args.projection_triplet_weight * loss_projection_triplet
                 loss = loss + args.projection_mma_weight * loss_projection_mma
                 loss = loss + args.projection_gate_weight * loss_projection_gate
-            if args.use_m3plus and args.m3plus_mode == 'dual_calibrated_fusion':
+            if args.use_m3plus and args.m3plus_mode in (
+                'dual_calibrated_fusion', 'projection_calibrated_fusion'
+            ):
                 loss = loss + args.calibration_id_weight * loss_calibration_id
                 loss = loss + args.calibration_triplet_weight * loss_calibration_triplet
                 loss = loss + args.calibration_mma_weight * loss_calibration_mma
