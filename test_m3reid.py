@@ -300,7 +300,8 @@ if __name__ == '__main__':
                                  'temporal_dual_calibrated_fusion',
                                  'projection_calibrated_fusion',
                                  'quad_calibrated_fusion',
-                                 'adaptive_projection_calibrated_fusion'],
+                                 'adaptive_projection_calibrated_fusion',
+                                 'adaptive_quad_calibrated_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
     parser.add_argument('--part_dim', default=2048, type=int,

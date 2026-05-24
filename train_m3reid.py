@@ -222,7 +222,8 @@ if __name__ == '__main__':
                                  'temporal_dual_calibrated_fusion',
                                  'projection_calibrated_fusion',
                                  'quad_calibrated_fusion',
-                                 'adaptive_projection_calibrated_fusion'],
+                                 'adaptive_projection_calibrated_fusion',
+                                 'adaptive_quad_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -536,6 +537,7 @@ if __name__ == '__main__':
             'projection_calibrated_fusion',
             'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
+            'adaptive_quad_calibrated_fusion',
         ):
             missing = set(load_result.missing_keys)
             with torch.no_grad():
@@ -590,7 +592,8 @@ if __name__ == '__main__':
         'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
         'projection_calibrated_fusion',
         'quad_calibrated_fusion',
-        'adaptive_projection_calibrated_fusion'
+        'adaptive_projection_calibrated_fusion',
+        'adaptive_quad_calibrated_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -948,7 +951,8 @@ if __name__ == '__main__':
             if args.use_m3plus and args.m3plus_mode in (
                 'anchor_projection_fusion', 'projection_calibrated_fusion',
                 'quad_calibrated_fusion',
-                'adaptive_projection_calibrated_fusion'
+                'adaptive_projection_calibrated_fusion',
+                'adaptive_quad_calibrated_fusion'
             ):
                 loss = loss + args.projection_id_weight * loss_projection_id
                 loss = loss + args.projection_triplet_weight * loss_projection_triplet
@@ -958,13 +962,17 @@ if __name__ == '__main__':
                 'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
                 'projection_calibrated_fusion',
                 'quad_calibrated_fusion',
-                'adaptive_projection_calibrated_fusion'
+                'adaptive_projection_calibrated_fusion',
+                'adaptive_quad_calibrated_fusion'
             ):
                 loss = loss + args.calibration_id_weight * loss_calibration_id
                 loss = loss + args.calibration_triplet_weight * loss_calibration_triplet
                 loss = loss + args.calibration_mma_weight * loss_calibration_mma
                 loss = loss + args.calibration_gate_weight * loss_calibration_gate
-            if args.use_m3plus and args.m3plus_mode == 'adaptive_projection_calibrated_fusion':
+            if args.use_m3plus and args.m3plus_mode in (
+                'adaptive_projection_calibrated_fusion',
+                'adaptive_quad_calibrated_fusion'
+            ):
                 loss = loss + args.branch_gate_weight * loss_branch_gate
 
             backward_loss = loss / args.accum_steps
