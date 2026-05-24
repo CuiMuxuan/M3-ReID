@@ -117,6 +117,7 @@ def build_train_params(args, model):
         'bidirectional_calibration', 'invariant_specific_calibration',
         'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
         'dual_calibration_fusion', 'calibration_bn_neck', 'calibration_classifier',
+        'direction_aware_calibration',
         'adaptive_projection_calibration_gate', 'adaptive_projection_bn_neck',
         'adaptive_projection_classifier',
     )
@@ -223,7 +224,8 @@ if __name__ == '__main__':
                                  'projection_calibrated_fusion',
                                  'quad_calibrated_fusion',
                                  'adaptive_projection_calibrated_fusion',
-                                 'adaptive_quad_calibrated_fusion'],
+                                 'adaptive_quad_calibrated_fusion',
+                                 'direction_aware_quad_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
                         choices=['standard', 'mild', 'none'],
@@ -538,6 +540,7 @@ if __name__ == '__main__':
             'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
+            'direction_aware_quad_calibrated_fusion',
         ):
             missing = set(load_result.missing_keys)
             with torch.no_grad():
@@ -593,7 +596,8 @@ if __name__ == '__main__':
         'projection_calibrated_fusion',
         'quad_calibrated_fusion',
         'adaptive_projection_calibrated_fusion',
-        'adaptive_quad_calibrated_fusion'
+        'adaptive_quad_calibrated_fusion',
+        'direction_aware_quad_calibrated_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
         criterion_part_cross_proto_loss = CrossModalityPrototypeTripletLoss(
@@ -942,7 +946,8 @@ if __name__ == '__main__':
             loss = loss + args.cross_proto_weight * loss_cross_proto
             loss = loss + args.part_cross_proto_weight * loss_part_cross_proto
             if args.use_m3plus and args.m3plus_mode in (
-                'bidirectional_calibration', 'invariant_specific_calibration'
+                'bidirectional_calibration', 'invariant_specific_calibration',
+                'direction_aware_quad_calibrated_fusion'
             ):
                 loss = loss + args.router_weight * loss_router
             if args.use_m3plus and args.m3plus_mode == 'invariant_specific_calibration':
@@ -952,7 +957,8 @@ if __name__ == '__main__':
                 'anchor_projection_fusion', 'projection_calibrated_fusion',
                 'quad_calibrated_fusion',
                 'adaptive_projection_calibrated_fusion',
-                'adaptive_quad_calibrated_fusion'
+                'adaptive_quad_calibrated_fusion',
+                'direction_aware_quad_calibrated_fusion'
             ):
                 loss = loss + args.projection_id_weight * loss_projection_id
                 loss = loss + args.projection_triplet_weight * loss_projection_triplet
@@ -963,7 +969,8 @@ if __name__ == '__main__':
                 'projection_calibrated_fusion',
                 'quad_calibrated_fusion',
                 'adaptive_projection_calibrated_fusion',
-                'adaptive_quad_calibrated_fusion'
+                'adaptive_quad_calibrated_fusion',
+                'direction_aware_quad_calibrated_fusion'
             ):
                 loss = loss + args.calibration_id_weight * loss_calibration_id
                 loss = loss + args.calibration_triplet_weight * loss_calibration_triplet
