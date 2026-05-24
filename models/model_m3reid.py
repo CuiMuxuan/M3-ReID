@@ -330,6 +330,8 @@ class M3ReID(nn.Module):
             self.output_dim = self.embedding_dim + part_dim + self.embedding_dim
         elif self.use_projection_calibrated_fusion or self.use_adaptive_projection_calibrated_fusion:
             self.output_dim = self.embedding_dim + self.projection_dim + self.embedding_dim
+        elif self.use_quad_calibrated_fusion:
+            self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
         else:
             self.output_dim = self.embedding_dim
 
