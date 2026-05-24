@@ -221,6 +221,7 @@ if __name__ == '__main__':
                                  'dual_calibrated_fusion',
                                  'temporal_dual_calibrated_fusion',
                                  'projection_calibrated_fusion',
+                                 'quad_calibrated_fusion',
                                  'adaptive_projection_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
     parser.add_argument('--m3plus_aug_strength', default='none',
@@ -239,6 +240,8 @@ if __name__ == '__main__':
                         help='Local feature weight used by dual_fusion inference, or initial local weight for adaptive_dual_fusion')
     parser.add_argument('--calibration_alpha', default=0.0, type=float,
                         help='Calibrated global feature weight used by dual_calibrated_fusion inference')
+    parser.add_argument('--projection_alpha', default=0.0, type=float,
+                        help='Anchor projection feature weight used by quad_calibrated_fusion inference')
     parser.add_argument('--adaptive_gate_min', default=0.0, type=float,
                         help='Minimum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--adaptive_gate_max', default=0.12, type=float,
@@ -490,6 +493,7 @@ if __name__ == '__main__':
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
                    calibration_alpha=args.calibration_alpha,
+                   projection_alpha=args.projection_alpha,
                    grad_checkpoint_head=args.grad_checkpoint_head,
                    temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout,
                    adaptive_gate_min=args.adaptive_gate_min,
@@ -530,6 +534,7 @@ if __name__ == '__main__':
             'dual_calibrated_fusion',
             'temporal_dual_calibrated_fusion',
             'projection_calibrated_fusion',
+            'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
         ):
             missing = set(load_result.missing_keys)
@@ -584,6 +589,7 @@ if __name__ == '__main__':
         'invariant_specific_calibration', 'anchor_projection_fusion',
         'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
         'projection_calibrated_fusion',
+        'quad_calibrated_fusion',
         'adaptive_projection_calibrated_fusion'
     )
     if args.use_m3plus and args.m3plus_mode in part_supervision_modes and args.part_cross_proto_weight > 0:
@@ -622,6 +628,7 @@ if __name__ == '__main__':
           f'mvl_num_heads={args.mvl_num_heads}, part_dim={args.part_dim}, '
           f'feature_dropout={args.feature_dropout}, fusion_alpha={args.fusion_alpha}, '
           f'calibration_alpha={args.calibration_alpha}, '
+          f'projection_alpha={args.projection_alpha}, '
           f'adaptive_gate_min={args.adaptive_gate_min}, adaptive_gate_max={args.adaptive_gate_max}, '
           f'part_lr_mult={args.part_lr_mult}, freeze_base_epochs={args.freeze_base_epochs}, '
           f'temporal_dim={args.temporal_dim}, temporal_dropout={args.temporal_dropout}, '
@@ -940,6 +947,7 @@ if __name__ == '__main__':
                 loss = loss + args.invariant_consistency_weight * loss_invariant_consistency
             if args.use_m3plus and args.m3plus_mode in (
                 'anchor_projection_fusion', 'projection_calibrated_fusion',
+                'quad_calibrated_fusion',
                 'adaptive_projection_calibrated_fusion'
             ):
                 loss = loss + args.projection_id_weight * loss_projection_id
@@ -949,6 +957,7 @@ if __name__ == '__main__':
             if args.use_m3plus and args.m3plus_mode in (
                 'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
                 'projection_calibrated_fusion',
+                'quad_calibrated_fusion',
                 'adaptive_projection_calibrated_fusion'
             ):
                 loss = loss + args.calibration_id_weight * loss_calibration_id

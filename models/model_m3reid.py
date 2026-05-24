@@ -49,7 +49,8 @@ class M3ReID(nn.Module):
 
     def __init__(self, sample_seq_num, class_num, use_enhancements=False, m3plus_mode='full', part_num=4,
                  mvl_num_heads=2, part_dim=2048, feature_dropout=0.0, fusion_alpha=0.2,
-                 calibration_alpha=0.0, grad_checkpoint_head=False, temporal_dim=256, temporal_dropout=0.0,
+                 calibration_alpha=0.0, projection_alpha=0.0, grad_checkpoint_head=False,
+                 temporal_dim=256, temporal_dropout=0.0,
                  adaptive_gate_min=0.0, adaptive_gate_max=0.12):
         """
         Initialize the M3-ReID model.
@@ -80,7 +81,7 @@ class M3ReID(nn.Module):
             'reliability_part_fusion', 'bidirectional_calibration',
             'invariant_specific_calibration', 'anchor_projection_fusion',
             'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
-            'projection_calibrated_fusion',
+            'projection_calibrated_fusion', 'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion'
         ):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
@@ -93,7 +94,7 @@ class M3ReID(nn.Module):
             'reliability_part_fusion', 'bidirectional_calibration',
             'invariant_specific_calibration', 'anchor_projection_fusion',
             'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
-            'projection_calibrated_fusion',
+            'projection_calibrated_fusion', 'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion'
         )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
@@ -108,7 +109,7 @@ class M3ReID(nn.Module):
             'reliability_part_fusion', 'bidirectional_calibration',
             'invariant_specific_calibration', 'anchor_projection_fusion',
             'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
-            'projection_calibrated_fusion',
+            'projection_calibrated_fusion', 'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion'
         )
         self.use_gated_residual_fusion = use_enhancements and m3plus_mode == 'gated_residual_fusion'
@@ -127,6 +128,9 @@ class M3ReID(nn.Module):
         self.use_projection_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'projection_calibrated_fusion'
         )
+        self.use_quad_calibrated_fusion = (
+            use_enhancements and m3plus_mode == 'quad_calibrated_fusion'
+        )
         self.use_adaptive_projection_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'adaptive_projection_calibrated_fusion'
         )
@@ -138,6 +142,7 @@ class M3ReID(nn.Module):
         self.use_adaptive_dual_fusion = use_enhancements and m3plus_mode == 'adaptive_dual_fusion'
         self.fusion_alpha = float(fusion_alpha)
         self.calibration_alpha = float(calibration_alpha)
+        self.projection_alpha = float(projection_alpha)
         self.grad_checkpoint_head = grad_checkpoint_head
 
         self.backbone = resnet50(pretrained=True)
@@ -244,7 +249,11 @@ class M3ReID(nn.Module):
                 self.dual_calibration_fusion = GatedResidualFusion(
                     self.embedding_dim, part_dim, init_scale=0.03, max_scale=0.08
                 )
-            elif self.use_projection_calibrated_fusion or self.use_adaptive_projection_calibrated_fusion:
+            elif (
+                self.use_projection_calibrated_fusion
+                or self.use_adaptive_projection_calibrated_fusion
+                or self.use_quad_calibrated_fusion
+            ):
                 self.projection_dim = 512
                 self.part_bn_neck = nn.BatchNorm1d(part_dim)
                 nn.init.constant_(self.part_bn_neck.bias, 0)
@@ -263,8 +272,12 @@ class M3ReID(nn.Module):
                 self.calibration_bn_neck.bias.requires_grad_(False)
                 self.calibration_classifier_frame = nn.Linear(self.embedding_dim, class_num, bias=False)
                 self.calibration_classifier = nn.Linear(self.embedding_dim, class_num, bias=False)
+                calibration_init_scale = 0.03 if self.use_quad_calibrated_fusion else 0.02
+                calibration_max_scale = 0.08 if self.use_quad_calibrated_fusion else 0.06
                 self.dual_calibration_fusion = GatedResidualFusion(
-                    self.embedding_dim, part_dim, init_scale=0.02, max_scale=0.06
+                    self.embedding_dim, part_dim,
+                    init_scale=calibration_init_scale,
+                    max_scale=calibration_max_scale,
                 )
                 if self.use_adaptive_projection_calibrated_fusion:
                     adaptive_output_dim = self.embedding_dim + self.projection_dim + self.embedding_dim
@@ -358,6 +371,17 @@ class M3ReID(nn.Module):
         projection_eval = self.l2_norm(projection_embed) * (projection_alpha ** 0.5)
         calibration_eval = self.l2_norm(calibration_embed) * (calibration_alpha ** 0.5)
         return torch.cat([global_eval, projection_eval, calibration_eval], dim=1)
+
+    def _quad_calibrated_eval(self, global_embed, part_embed, projection_embed, calibration_embed):
+        part_alpha = min(max(self.fusion_alpha, 0.0), 1.0)
+        projection_alpha = min(max(self.projection_alpha, 0.0), 1.0 - part_alpha)
+        calibration_alpha = min(max(self.calibration_alpha, 0.0), 1.0 - part_alpha - projection_alpha)
+        global_alpha = max(1.0 - part_alpha - projection_alpha - calibration_alpha, 0.0)
+        global_eval = self.l2_norm(global_embed) * (global_alpha ** 0.5)
+        part_eval = self.l2_norm(part_embed) * (part_alpha ** 0.5)
+        projection_eval = self.l2_norm(projection_embed) * (projection_alpha ** 0.5)
+        calibration_eval = self.l2_norm(calibration_embed) * (calibration_alpha ** 0.5)
+        return torch.cat([global_eval, part_eval, projection_eval, calibration_eval], dim=1)
 
     def _adaptive_projection_calibrated_eval(self, global_embed, projection_embed, calibration_embed):
         projection_alpha, calibration_alpha = self.adaptive_projection_calibration_gate(
@@ -523,7 +547,11 @@ class M3ReID(nn.Module):
                     self.dual_calibration_fusion, x_pool, part_pool
                 )
                 fusion_gate = calibration_gate
-            elif self.use_projection_calibrated_fusion or self.use_adaptive_projection_calibrated_fusion:
+            elif (
+                self.use_projection_calibrated_fusion
+                or self.use_adaptive_projection_calibrated_fusion
+                or self.use_quad_calibrated_fusion
+            ):
                 projection_pool, projection_gate = self._checkpoint_if_enabled(
                     self.anchor_projection_fusion, x_pool, part_pool
                 )
@@ -581,6 +609,7 @@ class M3ReID(nn.Module):
                 if (
                     self.use_anchor_projection_fusion
                     or self.use_projection_calibrated_fusion
+                    or self.use_quad_calibrated_fusion
                     or self.use_adaptive_projection_calibrated_fusion
                 ):
                     projection_embed = self.projection_bn_neck(projection_pool)
@@ -598,6 +627,7 @@ class M3ReID(nn.Module):
                 if (
                     self.use_dual_calibrated_fusion
                     or self.use_projection_calibrated_fusion
+                    or self.use_quad_calibrated_fusion
                     or self.use_adaptive_projection_calibrated_fusion
                 ):
                     calibration_embed = self.calibration_bn_neck(calibration_pool)
@@ -654,11 +684,19 @@ class M3ReID(nn.Module):
                 calibration_embed = self.calibration_bn_neck(calibration_pool)
                 calibration_embed = calibration_embed.reshape(-1, t, calibration_embed.shape[-1]).mean(dim=1)
                 return self._dual_calibrated_eval(x_embed_mean, part_aux[1], calibration_embed)
-            if self.use_projection_calibrated_fusion or self.use_adaptive_projection_calibrated_fusion:
+            if (
+                self.use_projection_calibrated_fusion
+                or self.use_adaptive_projection_calibrated_fusion
+                or self.use_quad_calibrated_fusion
+            ):
                 projection_embed = self.projection_bn_neck(projection_pool)
                 projection_embed = projection_embed.reshape(-1, t, projection_embed.shape[-1]).mean(dim=1)
                 calibration_embed = self.calibration_bn_neck(calibration_pool)
                 calibration_embed = calibration_embed.reshape(-1, t, calibration_embed.shape[-1]).mean(dim=1)
+                if self.use_quad_calibrated_fusion:
+                    return self._quad_calibrated_eval(
+                        x_embed_mean, part_aux[1], projection_embed, calibration_embed
+                    )
                 if self.use_adaptive_projection_calibrated_fusion:
                     return self._adaptive_projection_calibrated_eval(
                         x_embed_mean, projection_embed, calibration_embed

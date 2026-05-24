@@ -299,6 +299,7 @@ if __name__ == '__main__':
                                  'dual_calibrated_fusion',
                                  'temporal_dual_calibrated_fusion',
                                  'projection_calibrated_fusion',
+                                 'quad_calibrated_fusion',
                                  'adaptive_projection_calibrated_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')
     parser.add_argument('--part_num', default=4, type=int, help='Number of horizontal local parts for M3Plus')
@@ -316,6 +317,8 @@ if __name__ == '__main__':
                         help='Local feature weight used by dual_fusion inference, or initial local weight for adaptive_dual_fusion')
     parser.add_argument('--calibration_alpha', default=0.0, type=float,
                         help='Calibrated global feature weight used by dual_calibrated_fusion inference')
+    parser.add_argument('--projection_alpha', default=0.0, type=float,
+                        help='Anchor projection feature weight used by quad_calibrated_fusion inference')
     parser.add_argument('--adaptive_gate_min', default=0.0, type=float,
                         help='Minimum local feature weight predicted by adaptive_dual_fusion')
     parser.add_argument('--adaptive_gate_max', default=0.12, type=float,
@@ -464,6 +467,7 @@ if __name__ == '__main__':
                    mvl_num_heads=args.mvl_num_heads, part_dim=args.part_dim,
                    feature_dropout=args.feature_dropout, fusion_alpha=args.fusion_alpha,
                    calibration_alpha=args.calibration_alpha,
+                   projection_alpha=args.projection_alpha,
                    grad_checkpoint_head=args.grad_checkpoint_head,
                    temporal_dim=args.temporal_dim, temporal_dropout=args.temporal_dropout,
                    adaptive_gate_min=args.adaptive_gate_min,
