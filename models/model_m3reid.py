@@ -35,6 +35,7 @@ from models.modules.enhancement import ModalityInvariantSpecificCalibration
 from models.modules.enhancement import AnchorPreservingProjectionFusion
 from models.modules.enhancement import AdaptiveProjectionCalibrationGate
 from models.modules.enhancement import ReliabilityBalancedQuadGate
+from models.modules.enhancement import AgreementAwareQuadResidualRefinement
 from models.modules.enhancement import TemporalEmbeddingRefinement
 
 
@@ -87,6 +88,7 @@ class M3ReID(nn.Module):
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
+            'agreement_quad_residual_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion'
         ):
@@ -105,6 +107,7 @@ class M3ReID(nn.Module):
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
+            'agreement_quad_residual_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion'
         )
@@ -125,6 +128,7 @@ class M3ReID(nn.Module):
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
+            'agreement_quad_residual_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion'
         )
@@ -160,6 +164,9 @@ class M3ReID(nn.Module):
         )
         self.use_reliability_quad_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'reliability_quad_calibrated_fusion'
+        )
+        self.use_agreement_quad_residual_fusion = (
+            use_enhancements and m3plus_mode == 'agreement_quad_residual_fusion'
         )
         self.use_detached_direction_aware_quad_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'detached_direction_aware_quad_calibrated_fusion'
@@ -292,6 +299,7 @@ class M3ReID(nn.Module):
                 or self.use_quad_calibrated_fusion
                 or self.use_adaptive_quad_calibrated_fusion
                 or self.use_reliability_quad_calibrated_fusion
+                or self.use_agreement_quad_residual_fusion
                 or self.use_direction_aware_quad_calibrated_fusion
             ):
                 self.projection_dim = 512
@@ -315,6 +323,7 @@ class M3ReID(nn.Module):
                 use_quad_calibration_scale = (
                     self.use_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
+                    or self.use_agreement_quad_residual_fusion
                     or self.use_direction_aware_quad_calibrated_fusion
                 )
                 calibration_init_scale = 0.03 if use_quad_calibration_scale else 0.02
@@ -325,6 +334,11 @@ class M3ReID(nn.Module):
                         init_part_alpha=self.fusion_alpha,
                         init_projection_alpha=self.projection_alpha,
                         init_calibration_alpha=self.calibration_alpha,
+                    )
+                if self.use_agreement_quad_residual_fusion:
+                    self.agreement_quad_refiner = AgreementAwareQuadResidualRefinement(
+                        self.embedding_dim, part_dim, self.projection_dim,
+                        init_scale=0.01, max_scale=0.04,
                     )
                 if self.use_direction_aware_quad_calibrated_fusion:
                     self.direction_aware_calibration = BidirectionalModalityCalibration(
@@ -343,12 +357,14 @@ class M3ReID(nn.Module):
                     self.use_adaptive_projection_calibrated_fusion
                     or self.use_adaptive_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
+                    or self.use_agreement_quad_residual_fusion
                     or self.use_supervised_quad_calibrated_fusion
                 ):
                     adaptive_output_dim = self.embedding_dim + self.projection_dim + self.embedding_dim
                     if (
                         self.use_adaptive_quad_calibrated_fusion
                         or self.use_reliability_quad_calibrated_fusion
+                        or self.use_agreement_quad_residual_fusion
                         or self.use_supervised_quad_calibrated_fusion
                     ):
                         adaptive_output_dim += part_dim
@@ -410,6 +426,8 @@ class M3ReID(nn.Module):
         elif self.use_adaptive_quad_calibrated_fusion:
             self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
         elif self.use_reliability_quad_calibrated_fusion:
+            self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
+        elif self.use_agreement_quad_residual_fusion:
             self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
         elif self.use_direction_aware_quad_calibrated_fusion:
             self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
@@ -507,7 +525,7 @@ class M3ReID(nn.Module):
             'bidirectional_calibration', 'invariant_specific_calibration',
             'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
             'dual_calibration_fusion', 'calibration_bn_neck', 'calibration_classifier',
-            'direction_aware_calibration',
+            'direction_aware_calibration', 'agreement_quad_refiner',
             'adaptive_projection_calibration_gate', 'adaptive_projection_bn_neck',
             'adaptive_projection_classifier', 'reliability_quad_gate',
         )
@@ -658,6 +676,7 @@ class M3ReID(nn.Module):
                 or self.use_quad_calibrated_fusion
                 or self.use_adaptive_quad_calibrated_fusion
                 or self.use_reliability_quad_calibrated_fusion
+                or self.use_agreement_quad_residual_fusion
                 or self.use_direction_aware_quad_calibrated_fusion
             ):
                 projection_pool, projection_gate = self._checkpoint_if_enabled(
@@ -796,6 +815,20 @@ class M3ReID(nn.Module):
                         aux['part_alpha'] = part_alpha
                         aux['projection_alpha'] = projection_alpha
                         aux['calibration_alpha'] = calibration_alpha
+                    if self.use_agreement_quad_residual_fusion:
+                        base_quad_eval = self._quad_calibrated_eval(
+                            x_embed_mean, part_embed_mean, aux['projection_embed_mean'], calibration_embed_mean
+                        )
+                        agreement_eval, agreement_gate = self.agreement_quad_refiner(
+                            x_embed_mean, part_embed_mean, aux['projection_embed_mean'],
+                            calibration_embed_mean, base_quad_eval
+                        )
+                        aux['fusion_embed_mean'] = agreement_eval
+                        agreement_bn = self.adaptive_projection_bn_neck(agreement_eval)
+                        aux['fusion_logits_mean'] = self.adaptive_projection_classifier(
+                            self.feature_dropout(agreement_bn)
+                        )
+                        aux['agreement_gate'] = agreement_gate
                     if self.use_supervised_quad_calibrated_fusion:
                         supervised_eval = self._quad_calibrated_eval(
                             x_embed_mean, part_embed_mean, aux['projection_embed_mean'], calibration_embed_mean
@@ -852,6 +885,13 @@ class M3ReID(nn.Module):
                 if self.use_reliability_quad_calibrated_fusion:
                     return self.reliability_quad_gate(
                         x_embed_mean, part_aux[1], projection_embed, calibration_embed
+                    )[0]
+                if self.use_agreement_quad_residual_fusion:
+                    base_quad_eval = self._quad_calibrated_eval(
+                        x_embed_mean, part_aux[1], projection_embed, calibration_embed
+                    )
+                    return self.agreement_quad_refiner(
+                        x_embed_mean, part_aux[1], projection_embed, calibration_embed, base_quad_eval
                     )[0]
                 if self.use_quad_calibrated_fusion:
                     return self._quad_calibrated_eval(

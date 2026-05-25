@@ -764,3 +764,102 @@ class ReliabilityBalancedQuadGate(nn.Module):
         calibration_eval = F.normalize(calibration_embed, dim=1) * torch.sqrt(calibration_alpha.clamp_min(1e-6))
         fused = torch.cat([global_eval, part_eval, projection_eval, calibration_eval], dim=1)
         return fused, part_alpha, projection_alpha, calibration_alpha
+
+
+class AgreementAwareQuadResidualRefinement(nn.Module):
+    """
+    Refine a fixed quad-calibrated embedding with a small residual update.
+
+    The residual is driven by normalized branch summaries and pairwise agreement
+    scores, but it is initialized to zero so the module starts exactly from the
+    warm-started baseline behavior.
+    """
+
+    def __init__(
+        self,
+        global_dim,
+        part_dim,
+        projection_dim,
+        calibration_dim=None,
+        hidden_dim=64,
+        init_scale=0.01,
+        max_scale=0.04,
+    ):
+        super().__init__()
+        if hidden_dim <= 0:
+            raise ValueError('hidden_dim must be positive.')
+        if projection_dim <= 0:
+            raise ValueError('projection_dim must be positive.')
+        if not 0.0 < max_scale <= 1.0:
+            raise ValueError('max_scale must be in (0, 1].')
+
+        calibration_dim = global_dim if calibration_dim is None else calibration_dim
+        self.quad_dim = global_dim + part_dim + projection_dim + calibration_dim
+        self.max_scale = float(max_scale)
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.projection_norm = nn.LayerNorm(projection_dim)
+        self.calibration_norm = nn.LayerNorm(calibration_dim)
+        self.base_norm = nn.LayerNorm(self.quad_dim)
+        self.global_reduce = nn.Linear(global_dim, hidden_dim, bias=False)
+        self.part_reduce = nn.Linear(part_dim, hidden_dim, bias=False)
+        self.projection_reduce = nn.Linear(projection_dim, hidden_dim, bias=False)
+        self.calibration_reduce = nn.Linear(calibration_dim, hidden_dim, bias=False)
+        self.base_reduce = nn.Linear(self.quad_dim, hidden_dim, bias=False)
+
+        summary_dim = hidden_dim * 5 + 6
+        self.summary_encoder = nn.Sequential(
+            nn.Linear(summary_dim, hidden_dim, bias=False),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
+            nn.GELU(),
+        )
+        gate_hidden_dim = max(hidden_dim // 2, 1)
+        self.gate = nn.Sequential(
+            nn.Linear(hidden_dim, gate_hidden_dim, bias=False),
+            nn.GELU(),
+            nn.Linear(gate_hidden_dim, 1, bias=True),
+            nn.Sigmoid(),
+        )
+        self.residual = nn.Linear(hidden_dim, self.quad_dim, bias=False)
+        self.scale = nn.Parameter(torch.tensor(float(init_scale)))
+
+        nn.init.zeros_(self.residual.weight)
+        nn.init.zeros_(self.gate[-2].weight)
+        nn.init.zeros_(self.gate[-2].bias)
+
+    def _summary(self, reducer, norm, x):
+        return F.normalize(reducer(norm(x.detach())), dim=1)
+
+    def forward(self, global_embed, part_embed, projection_embed, calibration_embed, base_embed):
+        global_summary = self._summary(self.global_reduce, self.global_norm, global_embed)
+        part_summary = self._summary(self.part_reduce, self.part_norm, part_embed)
+        projection_summary = self._summary(self.projection_reduce, self.projection_norm, projection_embed)
+        calibration_summary = self._summary(self.calibration_reduce, self.calibration_norm, calibration_embed)
+        base_summary = self._summary(self.base_reduce, self.base_norm, base_embed)
+
+        agreements = torch.cat([
+            (global_summary * part_summary).sum(dim=1, keepdim=True),
+            (global_summary * projection_summary).sum(dim=1, keepdim=True),
+            (global_summary * calibration_summary).sum(dim=1, keepdim=True),
+            (part_summary * projection_summary).sum(dim=1, keepdim=True),
+            (part_summary * calibration_summary).sum(dim=1, keepdim=True),
+            (projection_summary * calibration_summary).sum(dim=1, keepdim=True),
+        ], dim=1)
+        summary = torch.cat([
+            global_summary,
+            part_summary,
+            projection_summary,
+            calibration_summary,
+            base_summary,
+            agreements,
+        ], dim=1)
+        hidden = self.summary_encoder(summary)
+        gate = self.gate(hidden)
+        residual = self.residual(hidden)
+        base_anchor = F.normalize(base_embed.detach(), dim=1)
+        residual = residual - (residual * base_anchor).sum(dim=1, keepdim=True) * base_anchor
+        scale = torch.clamp(self.scale, min=0.0, max=self.max_scale)
+        refined = base_embed + scale * gate * residual
+        return refined, gate

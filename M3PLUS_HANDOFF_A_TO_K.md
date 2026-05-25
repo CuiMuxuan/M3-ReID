@@ -1011,4 +1011,5 @@ Main conclusion:
 - `SchemeAE reliability_quad_calibrated_fusion` was able to run after the forward-path fix, but it early-stopped at epoch 15 and did not beat `SchemeAA`.
 - The first AE run also missed the `reliability_quad_calibrated_fusion` calibration loss wiring; that was corrected afterward.
 - `SchemeAE2 reliability_quad_calibrated_fusion` reused the AA warm start and corrected calibration-loss wiring, but still early-stopped at epoch 15 with best `i2v 69.96 / v2i 72.96`.
-- Current next run: `SchemeAF supervised_quad_calibrated_fusion`. It keeps the fixed AA quad retrieval form and adds training-time ID/triplet supervision on the final fixed quad embedding, so optimization is aligned with the unchanged single-clip direct-similarity evaluation.
+- `SchemeAF supervised_quad_calibrated_fusion` ran from the `SchemeAA` best checkpoint. It activated final-fusion ID/triplet losses, but early stopped at epoch 20 with best epoch 5 result `i2v 69.96 / v2i 72.96`; it did not beat `SchemeAA`.
+- Current next run: `SchemeAG agreement_quad_residual_fusion`. It keeps the fixed `SchemeAA` four-branch output and appends a zero-initialized, bounded agreement-aware residual refinement head. This remains model-side only: single-clip direct-similarity evaluation, no re-ranking, no multi-clip claim.

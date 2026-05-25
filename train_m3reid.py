@@ -118,6 +118,7 @@ def build_train_params(args, model):
         'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
         'dual_calibration_fusion', 'calibration_bn_neck', 'calibration_classifier',
         'direction_aware_calibration', 'reliability_quad_gate',
+        'agreement_quad_refiner',
         'adaptive_projection_calibration_gate', 'adaptive_projection_bn_neck',
         'adaptive_projection_classifier',
     )
@@ -227,6 +228,7 @@ if __name__ == '__main__':
                                  'adaptive_projection_calibrated_fusion',
                                  'adaptive_quad_calibrated_fusion',
                                  'reliability_quad_calibrated_fusion',
+                                 'agreement_quad_residual_fusion',
                                  'direction_aware_quad_calibrated_fusion',
                                  'detached_direction_aware_quad_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
@@ -545,6 +547,7 @@ if __name__ == '__main__':
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
+            'agreement_quad_residual_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion',
         ):
@@ -605,6 +608,7 @@ if __name__ == '__main__':
         'adaptive_projection_calibrated_fusion',
         'adaptive_quad_calibrated_fusion',
         'reliability_quad_calibrated_fusion',
+        'agreement_quad_residual_fusion',
         'direction_aware_quad_calibrated_fusion',
         'detached_direction_aware_quad_calibrated_fusion'
     )
@@ -977,6 +981,7 @@ if __name__ == '__main__':
                 'adaptive_projection_calibrated_fusion',
                 'adaptive_quad_calibrated_fusion',
                 'reliability_quad_calibrated_fusion',
+                'agreement_quad_residual_fusion',
                 'direction_aware_quad_calibrated_fusion',
                 'detached_direction_aware_quad_calibrated_fusion'
             ):
@@ -992,6 +997,7 @@ if __name__ == '__main__':
                 'adaptive_projection_calibrated_fusion',
                 'adaptive_quad_calibrated_fusion',
                 'reliability_quad_calibrated_fusion',
+                'agreement_quad_residual_fusion',
                 'direction_aware_quad_calibrated_fusion',
                 'detached_direction_aware_quad_calibrated_fusion'
             ):
