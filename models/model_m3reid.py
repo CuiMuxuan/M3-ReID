@@ -749,6 +749,7 @@ class M3ReID(nn.Module):
                     or self.use_adaptive_projection_calibrated_fusion
                     or self.use_adaptive_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
+                    or self.use_agreement_quad_residual_fusion
                     or self.use_direction_aware_quad_calibrated_fusion
                 ):
                     projection_embed = self.projection_bn_neck(projection_pool)
@@ -770,6 +771,7 @@ class M3ReID(nn.Module):
                     or self.use_adaptive_projection_calibrated_fusion
                     or self.use_adaptive_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
+                    or self.use_agreement_quad_residual_fusion
                     or self.use_direction_aware_quad_calibrated_fusion
                 ):
                     calibration_embed = self.calibration_bn_neck(calibration_pool)
@@ -872,6 +874,7 @@ class M3ReID(nn.Module):
                 or self.use_quad_calibrated_fusion
                 or self.use_adaptive_quad_calibrated_fusion
                 or self.use_reliability_quad_calibrated_fusion
+                or self.use_agreement_quad_residual_fusion
                 or self.use_direction_aware_quad_calibrated_fusion
             ):
                 projection_embed = self.projection_bn_neck(projection_pool)
