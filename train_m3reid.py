@@ -117,7 +117,7 @@ def build_train_params(args, model):
         'bidirectional_calibration', 'invariant_specific_calibration',
         'anchor_projection_fusion', 'projection_bn_neck', 'projection_classifier',
         'dual_calibration_fusion', 'calibration_bn_neck', 'calibration_classifier',
-        'direction_aware_calibration',
+        'direction_aware_calibration', 'reliability_quad_gate',
         'adaptive_projection_calibration_gate', 'adaptive_projection_bn_neck',
         'adaptive_projection_classifier',
     )
@@ -225,6 +225,7 @@ if __name__ == '__main__':
                                  'quad_calibrated_fusion',
                                  'adaptive_projection_calibrated_fusion',
                                  'adaptive_quad_calibrated_fusion',
+                                 'reliability_quad_calibrated_fusion',
                                  'direction_aware_quad_calibrated_fusion',
                                  'detached_direction_aware_quad_calibrated_fusion'],
                         help='M3Plus architecture mode. dual_fusion keeps the baseline global head and adds a supervised local fusion branch')
@@ -541,6 +542,7 @@ if __name__ == '__main__':
             'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
+            'reliability_quad_calibrated_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion',
         ):
@@ -599,6 +601,7 @@ if __name__ == '__main__':
         'quad_calibrated_fusion',
         'adaptive_projection_calibrated_fusion',
         'adaptive_quad_calibrated_fusion',
+        'reliability_quad_calibrated_fusion',
         'direction_aware_quad_calibrated_fusion',
         'detached_direction_aware_quad_calibrated_fusion'
     )
@@ -926,6 +929,13 @@ if __name__ == '__main__':
                         loss_branch_gate = loss_branch_gate + F.mse_loss(
                             part_aux['calibration_alpha'], calibration_targets
                         )
+                        if 'part_alpha' in part_aux:
+                            part_targets = part_aux['part_alpha'].new_full(
+                                part_aux['part_alpha'].shape, args.fusion_alpha
+                            )
+                            loss_branch_gate = loss_branch_gate + F.mse_loss(
+                                part_aux['part_alpha'], part_targets
+                            )
 
             _, predicted = x_logits_m.max(dim=1)
             cls_acc = (predicted.eq(labels).sum().item()) / len(labels)
@@ -962,6 +972,7 @@ if __name__ == '__main__':
                 'quad_calibrated_fusion',
                 'adaptive_projection_calibrated_fusion',
                 'adaptive_quad_calibrated_fusion',
+                'reliability_quad_calibrated_fusion',
                 'direction_aware_quad_calibrated_fusion',
                 'detached_direction_aware_quad_calibrated_fusion'
             ):
@@ -984,7 +995,8 @@ if __name__ == '__main__':
                 loss = loss + args.calibration_gate_weight * loss_calibration_gate
             if args.use_m3plus and args.m3plus_mode in (
                 'adaptive_projection_calibrated_fusion',
-                'adaptive_quad_calibrated_fusion'
+                'adaptive_quad_calibrated_fusion',
+                'reliability_quad_calibrated_fusion'
             ):
                 loss = loss + args.branch_gate_weight * loss_branch_gate
 

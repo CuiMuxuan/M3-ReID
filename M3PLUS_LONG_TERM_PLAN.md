@@ -1,13 +1,17 @@
 # M3Plus Long-Term Execution Plan
 
+> Historical HITSZ notes remain in this file. The active execution line has moved to BUPTCampus; use the BUPTCampus update near the end for the current best result, viable paths, and failed routes.
+
 > Superseded constraint: the project now accepts model/module innovation only. Do not use BoT-style training tricks from "Bag of Tricks and A Strong Baseline for Deep Person Re-identification" as gain sources, including warmup LR, random erasing, label smoothing, last-stride changes, BNNeck as a new contribution, center loss, or image-size/batch-size tuning. Older rows in this file that mention those tricks are historical notes, not active instructions.
 
 ## Goal
 
-Use the 10-frame task as the main track and improve both BUPTCampus and HITSZ-VCM over the provided M3-ReID baseline logs by at least 2 percentage points.
+Active goal as of 2026-05-25: use model/module innovation only, with direct single-clip similarity evaluation, and improve BUPTCampus over the no-BoT baseline by at least 1 Rank-1 point where possible.
 
 Primary acceptance metric: Rank-1 in both retrieval directions.
 Secondary acceptance metric: mAP in both retrieval directions.
+
+The older +2 target and HITSZ reference table below are historical context. Do not use re-ranking, multi-clip inference, BoT-style tricks, or evaluation-score changes as model-only evidence.
 
 ## Baseline From Provided Logs
 
@@ -506,3 +510,81 @@ Create one row per final run:
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |
 | BUPTCampus | 10 | 0 | `model_epoch-XXX.pth` |  |  |  |  |  |
 | HITSZ-VCM | 10 | 0 | `model_epoch-XXX.pth` |  |  |  |  |  |
+
+## HITSZ-VCM Current Record
+
+Current baseline and target:
+
+```text
+Reference 10-frame baseline: i2v 73.58 / v2i 77.00
+V100 rerun reference: i2v 73.60 / v2i 76.72
+Model-only +1 target: i2v 74.58 / v2i 78.00
+```
+
+Current best model-only result:
+
+```text
+SchemeD dual_fusion, single-clip, alpha=0.05: i2v 74.39 / v2i 77.64
+Gap to model-only +1 target: i2v -0.19 / v2i -0.36
+```
+
+Separate non-model-only results:
+
+```text
+SchemeD + SchemeH multi-clip, no re-ranking: i2v 74.67 / v2i 78.15
+SchemeD + SchemeH + SchemeM/N re-ranking: i2v 75.70 / v2i 79.00
+```
+
+What works:
+
+- `SchemeD` is the strongest HITSZ model-side route so far: baseline-preserving dual global/local fusion with a small late-fusion weight.
+- The local part branch is useful only when it is bounded and added conservatively to the pretrained global embedding.
+- `SchemeH` multi-clip and `SchemeM/N` reciprocal top-k re-ranking are useful for separate inference/post-processing gains, but they are not model innovation.
+
+What does not work:
+
+- Part-only training and direct local residual injection damage the strong global embedding.
+- Prototype/cross-prototype, CosFace, temporal-conv, and adaptive fusion variants did not reliably lift both i2v and v2i Rank-1.
+- Broader part-reranking sweeps saturate around the same top-1 ordering errors and should not be treated as model-side progress.
+
+Current judgment:
+
+- HITSZ model-only progress is real but incomplete: `SchemeD` improves over the baseline, but it does not pass the adjusted +1 target under single-clip direct similarity.
+- The only result that reaches the older +2 HITSZ target uses re-ranking, so it must remain separate from the model-side claim.
+- A future HITSZ model-side route should stay baseline-preserving and target top-1 ordering without changing evaluation scores after embedding extraction.
+
+## BUPTCampus Current Record
+
+Current baseline and target:
+
+```text
+No-BoT baseline: i2v 69.03 / v2i 72.41
+Model-only +1 target: i2v 70.03 / v2i 73.41
+```
+
+Current best model-only result:
+
+```text
+SchemeAA single-clip: i2v 70.15 / v2i 72.96
+```
+
+What works:
+
+- `SchemeAA` is the only BUPTCampus model-side run that clearly improves over the baseline.
+- The conservative `quad_calibrated_fusion` family is stable and trainable.
+- `projection_gate` helps when it keeps the projection branch bounded.
+
+What does not work:
+
+- `SchemeS` reliability part fusion.
+- `SchemeT` bidirectional calibration.
+- `SchemeV` anchor projection and gate variants.
+- `SchemeW` dual calibrated variants.
+- `SchemeAC`, `SchemeAC2`, `SchemeAC3`, `SchemeAD`, and `SchemeAD2` router-based direction-aware calibration variants.
+
+Current judgment:
+
+- The best active direction is still `SchemeAA` or a nearby non-router reliability/calibration design.
+- Router-heavy modality direction modeling is not currently a viable main path on BUPTCampus.
+- `SchemeH` multi-clip can still be used as a separate inference-side enhancement, but it does not count as model innovation.
+- Next implemented test: `SchemeAE reliability_quad_calibrated_fusion`, a non-router sample-wise reliability gate over the AA four-branch embedding. It starts from the AA checkpoint and keeps single-clip direct similarity evaluation.

@@ -662,3 +662,105 @@ class AdaptiveProjectionCalibrationGate(nn.Module):
         branch_sum = projection_alpha + calibration_alpha
         scale = ((1.0 - 1e-6) / branch_sum.clamp_min(1e-6)).clamp(max=1.0)
         return projection_alpha * scale, calibration_alpha * scale
+
+
+class ReliabilityBalancedQuadGate(nn.Module):
+    """
+    Sample-wise branch weighting for conservative quad calibrated fusion.
+
+    The gate predicts small reliability weights for the part, projection, and
+    calibration branches while keeping the original global descriptor as the
+    anchor. It is initialized to the fixed SchemeAA weights, so a warm-started
+    checkpoint begins from the known quad-fusion behavior.
+    """
+
+    def __init__(self, global_dim, part_dim, projection_dim, calibration_dim=None,
+                 hidden_dim=64, init_part_alpha=0.08, init_projection_alpha=0.015,
+                 init_calibration_alpha=0.025, max_part_alpha=None,
+                 max_projection_alpha=None, max_calibration_alpha=None):
+        super().__init__()
+        if hidden_dim <= 0:
+            raise ValueError('hidden_dim must be positive.')
+        if projection_dim <= 0:
+            raise ValueError('projection_dim must be positive.')
+
+        calibration_dim = global_dim if calibration_dim is None else calibration_dim
+        max_part_alpha = (
+            max(float(init_part_alpha) * 1.5, 1e-4)
+            if max_part_alpha is None else float(max_part_alpha)
+        )
+        max_projection_alpha = (
+            max(float(init_projection_alpha) * 1.5, 1e-4)
+            if max_projection_alpha is None else float(max_projection_alpha)
+        )
+        max_calibration_alpha = (
+            max(float(init_calibration_alpha) * 1.5, 1e-4)
+            if max_calibration_alpha is None else float(max_calibration_alpha)
+        )
+        if max_part_alpha <= 0 or max_projection_alpha <= 0 or max_calibration_alpha <= 0:
+            raise ValueError('maximum branch weights must be positive.')
+
+        self.register_buffer('max_part_alpha', torch.tensor(max_part_alpha))
+        self.register_buffer('max_projection_alpha', torch.tensor(max_projection_alpha))
+        self.register_buffer('max_calibration_alpha', torch.tensor(max_calibration_alpha))
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.projection_norm = nn.LayerNorm(projection_dim)
+        self.calibration_norm = nn.LayerNorm(calibration_dim)
+        self.global_reduce = nn.Linear(global_dim, hidden_dim, bias=False)
+        self.part_reduce = nn.Linear(part_dim, hidden_dim, bias=False)
+        self.projection_reduce = nn.Linear(projection_dim, hidden_dim, bias=False)
+        self.calibration_reduce = nn.Linear(calibration_dim, hidden_dim, bias=False)
+        self.gate = nn.Sequential(
+            nn.LayerNorm(hidden_dim * 4 + 3),
+            nn.Linear(hidden_dim * 4 + 3, hidden_dim, bias=False),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 3, bias=True),
+        )
+
+        init_ratios = torch.tensor([
+            float(init_part_alpha) / max_part_alpha,
+            float(init_projection_alpha) / max_projection_alpha,
+            float(init_calibration_alpha) / max_calibration_alpha,
+        ]).clamp(1e-4, 1.0 - 1e-4)
+        init_bias = torch.log(init_ratios / (1.0 - init_ratios))
+        nn.init.zeros_(self.gate[-1].weight)
+        with torch.no_grad():
+            self.gate[-1].bias.copy_(init_bias)
+
+    def _summary(self, reducer, norm, x):
+        return F.normalize(reducer(norm(x.detach())), dim=1)
+
+    def forward(self, global_embed, part_embed, projection_embed, calibration_embed):
+        global_summary = self._summary(self.global_reduce, self.global_norm, global_embed)
+        part_summary = self._summary(self.part_reduce, self.part_norm, part_embed)
+        projection_summary = self._summary(self.projection_reduce, self.projection_norm, projection_embed)
+        calibration_summary = self._summary(self.calibration_reduce, self.calibration_norm, calibration_embed)
+
+        agreements = torch.cat([
+            (global_summary * part_summary).sum(dim=1, keepdim=True),
+            (global_summary * projection_summary).sum(dim=1, keepdim=True),
+            (global_summary * calibration_summary).sum(dim=1, keepdim=True),
+        ], dim=1)
+        gate_input = torch.cat([
+            global_summary, part_summary, projection_summary, calibration_summary, agreements
+        ], dim=1)
+        gate = torch.sigmoid(self.gate(gate_input))
+        part_alpha = gate[:, 0:1] * self.max_part_alpha
+        projection_alpha = gate[:, 1:2] * self.max_projection_alpha
+        calibration_alpha = gate[:, 2:3] * self.max_calibration_alpha
+
+        branch_sum = part_alpha + projection_alpha + calibration_alpha
+        scale = ((1.0 - 1e-6) / branch_sum.clamp_min(1e-6)).clamp(max=1.0)
+        part_alpha = part_alpha * scale
+        projection_alpha = projection_alpha * scale
+        calibration_alpha = calibration_alpha * scale
+        global_alpha = (1.0 - part_alpha - projection_alpha - calibration_alpha).clamp_min(1e-6)
+
+        global_eval = F.normalize(global_embed, dim=1) * torch.sqrt(global_alpha)
+        part_eval = F.normalize(part_embed, dim=1) * torch.sqrt(part_alpha.clamp_min(1e-6))
+        projection_eval = F.normalize(projection_embed, dim=1) * torch.sqrt(projection_alpha.clamp_min(1e-6))
+        calibration_eval = F.normalize(calibration_embed, dim=1) * torch.sqrt(calibration_alpha.clamp_min(1e-6))
+        fused = torch.cat([global_eval, part_eval, projection_eval, calibration_eval], dim=1)
+        return fused, part_alpha, projection_alpha, calibration_alpha

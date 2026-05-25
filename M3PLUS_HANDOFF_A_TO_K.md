@@ -1,4 +1,4 @@
-# M3Plus Project Handoff: Scheme A to K
+# M3Plus Project Handoff: Scheme A to K and BUPTCampus Follow-up
 
 ## Project Context
 
@@ -9,7 +9,7 @@
 - Workflow: edit locally, manually commit and push to GitHub, pull on server, train in `tmux`
 - Main protocol: 10-frame
 - Current goal: model-side innovation only, no re-ranking contribution counted.
-- Acceptance threshold: improve Rank-1 by at least 1 point over the original baseline in both directions when using single-clip direct similarity evaluation.
+- BUPTCampus updated acceptance threshold: improve Rank-1 by at least 1 point over the no-BoT baseline in both directions when using single-clip direct similarity evaluation.
 - Innovation requirement: at least one clearly writable model innovation, supported by at least two concrete model modules.
 - HITSZ-VCM model-only target: `i2v 74.58 / v2i 78.00`
 - BUPTCampus model-only target: train a fresh baseline first, then set target to baseline Rank-1 + 1.00 in both directions.
@@ -727,9 +727,10 @@ Dataset path:
 Current status:
 
 - BUPTCampus evaluation is supported by `test_m3reid.py`.
-- No current BUPTCampus checkpoint has been trained in this M3Plus round.
+- A fresh BUPTCampus baseline has now been trained.
+- The current best BUPTCampus model-only result is SchemeAA single-clip, not a re-ranking result.
 - BUPTCampus-specific baseline, SchemeD, SchemeH, and SchemeN wrapper scripts are available.
-- Do not start from SchemeN evaluation yet; first train a BUPTCampus baseline checkpoint, then warm-start SchemeD from that checkpoint.
+- Do not start from SchemeN evaluation yet; first train a BUPTCampus baseline checkpoint, then warm-start model-side schemes from that checkpoint.
 
 New scripts:
 
@@ -819,6 +820,72 @@ ADAPTIVE_GATE_MAX=0.10
 MODEL_CKPT=<SchemeK output dir>/modelckpt/model_best.pth
 ```
 
+## BUPTCampus Experiment Summary
+
+### Baseline and best known results
+
+No-BoT baseline:
+
+```text
+i2v 69.03 / v2i 72.41
+```
+
+Current best model-only result:
+
+```text
+SchemeAA single-clip
+i2v 70.15 / v2i 72.96
+```
+
+This is the current best model-side result. It clears the i2v +1 target but not the v2i +1 target.
+
+Best observed calibration-style or reliability-style alternatives did not beat AA:
+
+```text
+SchemeW5 best:
+i2v 69.96 / v2i 72.78
+
+SchemeS best:
+i2v 69.78 / v2i 72.04
+
+SchemeT best:
+i2v 69.59 / v2i 72.41
+
+SchemeV best:
+i2v 69.96 / v2i 72.96
+
+SchemeAC2 best:
+i2v 69.96 / v2i 72.96
+
+SchemeAC3 best:
+i2v 69.96 / v2i 72.96
+
+SchemeAD2 best:
+i2v 69.96 / v2i 72.96
+```
+
+### What worked
+
+- `SchemeAA` is the only BUPTCampus model-side scheme so far that clearly improves over the baseline in single-clip direct similarity.
+- The four-branch `quad_calibrated_fusion` family is structurally valid and can be trained stably.
+- `projection_gate` regularization is useful when it prevents the projection branch from dominating.
+- `SchemeH` multi-clip is still useful as an inference-side enhancer, but it is not counted as model innovation.
+
+### What did not work
+
+- `SchemeS` reliability part fusion: no meaningful improvement over the baseline.
+- `SchemeT` bidirectional calibration: weak v2i router learning, no target pass.
+- `SchemeV` anchor projection and its gate variants: stable, but not enough to beat AA.
+- `SchemeW` dual calibration variants: good calibration behavior, but still below AA on Rank-1.
+- `SchemeAC` and `SchemeAD` router-based direction-aware calibration: router supervision either stayed near random or hurt Rank-1 after learning.
+- `SchemeAC2`, `SchemeAC3`, `SchemeAD`, and `SchemeAD2` all failed to outperform AA.
+
+### Current conclusion
+
+- The current best path for BUPTCampus is still `SchemeAA`.
+- Router-based modality-direction modeling is not a viable main path on this dataset under the present loss design.
+- The next model-side step should use a non-router reliability or calibration design, preferably one that keeps the global embedding untouched and adds a separate auxiliary branch or a detached reliability gate.
+
 ## Overall Conclusion
 
 The only route that reached the old HITSZ +2 target used re-ranking:
@@ -850,6 +917,95 @@ Top-1 retrieval ordering, especially i2v, not ordinary classification convergenc
 
 Next priority:
 
-1. Run Schemes O/P/Q sequentially for model-only +1 validation.
-2. Move BUPTCampus from baseline training, because no current BUPTCampus checkpoint exists in this M3Plus round.
-3. Keep HITSZ SchemeM/N only as a separate re-ranking result, not as model-only target evidence.
+1. Keep BUPTCampus model-side work centered on `SchemeAA`-style calibration or a new detached reliability gate.
+2. Keep HITSZ SchemeM/N only as a separate re-ranking result, not as model-only target evidence.
+3. Treat router-heavy direction-aware schemes as closed for BUPTCampus unless a new architecture removes router gradients from the retrieval path.
+
+## HITSZ-VCM Current Record
+
+Baseline and target:
+
+```text
+Reference 10-frame baseline: i2v 73.58 / v2i 77.00
+V100 rerun reference: i2v 73.60 / v2i 76.72
+Model-only +1 target: i2v 74.58 / v2i 78.00
+```
+
+Current best model-only result:
+
+```text
+SchemeD dual_fusion single-clip alpha=0.05
+i2v 74.39 / mAP 61.47 / mINP 34.89
+v2i 77.64 / mAP 64.32 / mINP 34.67
+```
+
+This is the strongest HITSZ model-side result so far, but it is still short of the adjusted model-only +1 target by `0.19` i2v Rank-1 and `0.36` v2i Rank-1.
+
+Separate non-model-only results:
+
+```text
+SchemeD + SchemeH multi-clip, no re-ranking
+i2v 74.67 / v2i 78.15
+
+SchemeD + SchemeH + SchemeM/N reciprocal top-k re-ranking
+i2v 75.70 / mAP 63.13 / mINP 36.03
+v2i 79.00 / mAP 65.95 / mINP 36.19
+```
+
+The second result reaches the old HITSZ +2 target, but it depends on re-ranking and must not be claimed as model-side innovation. SchemeH multi-clip is also inference sampling, not model innovation.
+
+What worked:
+
+- `SchemeD` dual global/local fusion is the best HITSZ model-side line.
+- The useful pattern is baseline-preserving fusion: keep the pretrained global embedding dominant and add local part evidence with a small bounded coefficient.
+- `SchemeM/N` reciprocal direction-aware re-ranking is effective as a post-processing analysis route, but only for separate reporting.
+
+What did not work:
+
+- `SchemeA` part-only local branch and `SchemeB` direct residual injection weakened the global retrieval space.
+- `SchemeG/I/J/K` style prototype, temporal, CosFace, and adaptive fusion variants did not improve both retrieval directions enough.
+- Continuing top-k part-reranking sweeps after `SchemeN` is low value because the route is already saturated and not counted as model innovation.
+
+Main conclusion:
+
+- HITSZ has a usable model innovation candidate in `SchemeD`, but the strict single-clip model-only result remains below the +1 target.
+- The successful HITSZ target-closing result is an inference/post-processing stack, not a pure model result.
+- For any future HITSZ model-side attempt, start from the `SchemeD` checkpoint and preserve the global embedding; do not revive router-heavy or score-matrix reranking work as model-side evidence.
+
+## BUPTCampus Current Record
+
+Baseline:
+
+```text
+i2v 69.03 / v2i 72.41
+```
+
+Current best model-only result:
+
+```text
+SchemeAA single-clip
+i2v 70.15 / v2i 72.96
+```
+
+This is the only BUPTCampus model-side result that clearly beats the baseline. It passes the +1 target in i2v, but not in v2i.
+
+What worked:
+
+- `SchemeAA` quad calibrated fusion from `SchemeW5` warm start.
+- Conservative projection/calibration branching.
+- Bounded `projection_gate` supervision.
+
+What did not work:
+
+- `SchemeS` reliability part fusion.
+- `SchemeT` bidirectional calibration.
+- `SchemeV` anchor projection variants.
+- `SchemeW` dual calibrated variants.
+- `SchemeAC`, `SchemeAC2`, `SchemeAC3`, `SchemeAD`, and `SchemeAD2` direction-aware router lines.
+
+Main conclusion:
+
+- BUPTCampus is not currently a router problem.
+- The router-based direction-aware family learned either nothing useful or hurt Rank-1 after it learned.
+- The most defensible next path is a non-router reliability branch that stays detached from the main retrieval embedding.
+- Current next run: `SchemeAE reliability_quad_calibrated_fusion`, which adds a non-router reliability gate on top of the AA quad embedding and keeps the evaluation protocol unchanged.
