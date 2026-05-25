@@ -644,6 +644,7 @@ class M3ReID(nn.Module):
                 or self.use_adaptive_projection_calibrated_fusion
                 or self.use_quad_calibrated_fusion
                 or self.use_adaptive_quad_calibrated_fusion
+                or self.use_reliability_quad_calibrated_fusion
                 or self.use_direction_aware_quad_calibrated_fusion
             ):
                 projection_pool, projection_gate = self._checkpoint_if_enabled(
