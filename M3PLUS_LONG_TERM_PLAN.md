@@ -587,4 +587,6 @@ Current judgment:
 - The best active direction is still `SchemeAA` or a nearby non-router reliability/calibration design.
 - Router-heavy modality direction modeling is not currently a viable main path on BUPTCampus.
 - `SchemeH` multi-clip can still be used as a separate inference-side enhancement, but it does not count as model innovation.
-- Next implemented test: `SchemeAE reliability_quad_calibrated_fusion`, a non-router sample-wise reliability gate over the AA four-branch embedding. It starts from the AA checkpoint and keeps single-clip direct similarity evaluation.
+- `SchemeAE reliability_quad_calibrated_fusion` ran without OOM or traceback after the forward-path fix, but early stopped at epoch 15 with best result `i2v 69.96 / v2i 72.96`, so it did not beat `SchemeAA`.
+- The first AE run also missed the `reliability_quad_calibrated_fusion` calibration loss wiring; that was corrected before the next rerun.
+- Next implemented test: `SchemeAE2 reliability_quad_calibrated_fusion` with the corrected calibration-loss wiring. It still keeps single-clip direct similarity evaluation and stays on the AA warm start.

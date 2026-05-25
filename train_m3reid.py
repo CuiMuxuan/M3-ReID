@@ -986,6 +986,7 @@ if __name__ == '__main__':
                 'quad_calibrated_fusion',
                 'adaptive_projection_calibrated_fusion',
                 'adaptive_quad_calibrated_fusion',
+                'reliability_quad_calibrated_fusion',
                 'direction_aware_quad_calibrated_fusion',
                 'detached_direction_aware_quad_calibrated_fusion'
             ):

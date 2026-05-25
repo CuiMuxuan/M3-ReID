@@ -1007,5 +1007,7 @@ Main conclusion:
 
 - BUPTCampus is not currently a router problem.
 - The router-based direction-aware family learned either nothing useful or hurt Rank-1 after it learned.
-- The most defensible next path is a non-router reliability branch that stays detached from the main retrieval embedding.
-- Current next run: `SchemeAE reliability_quad_calibrated_fusion`, which adds a non-router reliability gate on top of the AA quad embedding and keeps the evaluation protocol unchanged.
+- The most defensible next path is still a non-router reliability branch that stays detached from the main retrieval embedding.
+- `SchemeAE reliability_quad_calibrated_fusion` was able to run after the forward-path fix, but it early-stopped at epoch 15 and did not beat `SchemeAA`.
+- The first AE run also missed the `reliability_quad_calibrated_fusion` calibration loss wiring; that was corrected afterward.
+- Current next run: `SchemeAE2 reliability_quad_calibrated_fusion`, which reuses the AA warm start, keeps single-clip direct similarity evaluation, and uses the corrected calibration-loss wiring.
