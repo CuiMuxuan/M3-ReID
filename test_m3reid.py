@@ -300,6 +300,7 @@ if __name__ == '__main__':
                                  'temporal_dual_calibrated_fusion',
                                  'projection_calibrated_fusion',
                                  'quad_calibrated_fusion',
+                                 'supervised_quad_calibrated_fusion',
                                  'adaptive_projection_calibrated_fusion',
                                  'adaptive_quad_calibrated_fusion',
                                  'reliability_quad_calibrated_fusion',

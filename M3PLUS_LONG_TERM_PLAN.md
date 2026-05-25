@@ -589,4 +589,5 @@ Current judgment:
 - `SchemeH` multi-clip can still be used as a separate inference-side enhancement, but it does not count as model innovation.
 - `SchemeAE reliability_quad_calibrated_fusion` ran without OOM or traceback after the forward-path fix, but early stopped at epoch 15 with best result `i2v 69.96 / v2i 72.96`, so it did not beat `SchemeAA`.
 - The first AE run also missed the `reliability_quad_calibrated_fusion` calibration loss wiring; that was corrected before the next rerun.
-- Next implemented test: `SchemeAE2 reliability_quad_calibrated_fusion` with the corrected calibration-loss wiring. It still keeps single-clip direct similarity evaluation and stays on the AA warm start.
+- `SchemeAE2 reliability_quad_calibrated_fusion` with corrected calibration-loss wiring also early stopped at epoch 15. Best result stayed `i2v 69.96 / v2i 72.96`, so the dynamic reliability-gate path is currently not better than fixed `SchemeAA`.
+- Next implemented test: `SchemeAF supervised_quad_calibrated_fusion`. It keeps the fixed AA quad retrieval form, but adds training-time ID/triplet supervision on the final fixed quad embedding so the optimization target directly matches the single-clip evaluation embedding.

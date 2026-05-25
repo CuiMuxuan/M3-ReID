@@ -83,6 +83,7 @@ class M3ReID(nn.Module):
             'invariant_specific_calibration', 'anchor_projection_fusion',
             'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
             'projection_calibrated_fusion', 'quad_calibrated_fusion',
+            'supervised_quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
@@ -100,6 +101,7 @@ class M3ReID(nn.Module):
             'invariant_specific_calibration', 'anchor_projection_fusion',
             'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
             'projection_calibrated_fusion', 'quad_calibrated_fusion',
+            'supervised_quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
@@ -119,6 +121,7 @@ class M3ReID(nn.Module):
             'invariant_specific_calibration', 'anchor_projection_fusion',
             'dual_calibrated_fusion', 'temporal_dual_calibrated_fusion',
             'projection_calibrated_fusion', 'quad_calibrated_fusion',
+            'supervised_quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
@@ -142,7 +145,12 @@ class M3ReID(nn.Module):
             use_enhancements and m3plus_mode == 'projection_calibrated_fusion'
         )
         self.use_quad_calibrated_fusion = (
-            use_enhancements and m3plus_mode == 'quad_calibrated_fusion'
+            use_enhancements and m3plus_mode in (
+                'quad_calibrated_fusion', 'supervised_quad_calibrated_fusion'
+            )
+        )
+        self.use_supervised_quad_calibrated_fusion = (
+            use_enhancements and m3plus_mode == 'supervised_quad_calibrated_fusion'
         )
         self.use_adaptive_projection_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'adaptive_projection_calibrated_fusion'
@@ -335,9 +343,14 @@ class M3ReID(nn.Module):
                     self.use_adaptive_projection_calibrated_fusion
                     or self.use_adaptive_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
+                    or self.use_supervised_quad_calibrated_fusion
                 ):
                     adaptive_output_dim = self.embedding_dim + self.projection_dim + self.embedding_dim
-                    if self.use_adaptive_quad_calibrated_fusion or self.use_reliability_quad_calibrated_fusion:
+                    if (
+                        self.use_adaptive_quad_calibrated_fusion
+                        or self.use_reliability_quad_calibrated_fusion
+                        or self.use_supervised_quad_calibrated_fusion
+                    ):
                         adaptive_output_dim += part_dim
                     self.adaptive_projection_bn_neck = nn.BatchNorm1d(adaptive_output_dim)
                     nn.init.constant_(self.adaptive_projection_bn_neck.bias, 0)
@@ -783,6 +796,15 @@ class M3ReID(nn.Module):
                         aux['part_alpha'] = part_alpha
                         aux['projection_alpha'] = projection_alpha
                         aux['calibration_alpha'] = calibration_alpha
+                    if self.use_supervised_quad_calibrated_fusion:
+                        supervised_eval = self._quad_calibrated_eval(
+                            x_embed_mean, part_embed_mean, aux['projection_embed_mean'], calibration_embed_mean
+                        )
+                        supervised_bn = self.adaptive_projection_bn_neck(supervised_eval)
+                        aux['fusion_embed_mean'] = supervised_eval
+                        aux['fusion_logits_mean'] = self.adaptive_projection_classifier(
+                            self.feature_dropout(supervised_bn)
+                        )
                 if self.use_adaptive_dual_fusion or self.use_supervised_dual_fusion:
                     if self.use_adaptive_dual_fusion:
                         fusion_embed_mean, fusion_gate_mean = self._adaptive_fusion(x_embed_mean, part_embed_mean)

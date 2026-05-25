@@ -1010,4 +1010,5 @@ Main conclusion:
 - The most defensible next path is still a non-router reliability branch that stays detached from the main retrieval embedding.
 - `SchemeAE reliability_quad_calibrated_fusion` was able to run after the forward-path fix, but it early-stopped at epoch 15 and did not beat `SchemeAA`.
 - The first AE run also missed the `reliability_quad_calibrated_fusion` calibration loss wiring; that was corrected afterward.
-- Current next run: `SchemeAE2 reliability_quad_calibrated_fusion`, which reuses the AA warm start, keeps single-clip direct similarity evaluation, and uses the corrected calibration-loss wiring.
+- `SchemeAE2 reliability_quad_calibrated_fusion` reused the AA warm start and corrected calibration-loss wiring, but still early-stopped at epoch 15 with best `i2v 69.96 / v2i 72.96`.
+- Current next run: `SchemeAF supervised_quad_calibrated_fusion`. It keeps the fixed AA quad retrieval form and adds training-time ID/triplet supervision on the final fixed quad embedding, so optimization is aligned with the unchanged single-clip direct-similarity evaluation.
