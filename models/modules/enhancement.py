@@ -377,7 +377,7 @@ class BidirectionalModalityCalibration(nn.Module):
     """
 
     def __init__(self, global_dim, part_dim, router_hidden=128, adapter_dim=128,
-                 init_scale=0.03, max_scale=0.08):
+                 init_scale=0.03, max_scale=0.08, detach_router=False):
         super().__init__()
         if router_hidden <= 0 or adapter_dim <= 0:
             raise ValueError('router_hidden and adapter_dim must be positive.')
@@ -386,6 +386,7 @@ class BidirectionalModalityCalibration(nn.Module):
 
         self.global_norm = nn.LayerNorm(global_dim)
         self.part_norm = nn.LayerNorm(part_dim)
+        self.detach_router = bool(detach_router)
         self.router = nn.Sequential(
             nn.Linear(global_dim + part_dim, router_hidden, bias=False),
             nn.ReLU(inplace=True),
@@ -420,10 +421,13 @@ class BidirectionalModalityCalibration(nn.Module):
     def forward(self, global_embed, part_embed):
         global_norm = self.global_norm(global_embed)
         part_norm = self.part_norm(part_embed)
-        router_logits = self.router(torch.cat([global_norm, part_norm], dim=1))
+        router_global = global_norm.detach() if self.detach_router else global_norm
+        router_part = part_norm.detach() if self.detach_router else part_norm
+        router_logits = self.router(torch.cat([router_global, router_part], dim=1))
         router_prob = torch.softmax(router_logits, dim=1)
-        ir_prob = router_prob[:, 0:1]
-        rgb_prob = router_prob[:, 1:2]
+        fusion_prob = router_prob.detach() if self.detach_router else router_prob
+        ir_prob = fusion_prob[:, 0:1]
+        rgb_prob = fusion_prob[:, 1:2]
 
         shared_delta = self._orthogonalize(
             self._adapter(self.shared_down, self.shared_up, global_norm), global_embed
@@ -444,7 +448,7 @@ class BidirectionalModalityCalibration(nn.Module):
             + ir_prob * ir_scale * ir_delta
             + rgb_prob * rgb_scale * rgb_delta
         )
-        rgb_gate = rgb_prob
+        rgb_gate = router_prob[:, 1:2]
         return fused, router_logits, rgb_gate
 
 

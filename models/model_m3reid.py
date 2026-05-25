@@ -84,7 +84,8 @@ class M3ReID(nn.Module):
             'projection_calibrated_fusion', 'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
-            'direction_aware_quad_calibrated_fusion'
+            'direction_aware_quad_calibrated_fusion',
+            'detached_direction_aware_quad_calibrated_fusion'
         ):
             raise ValueError(f'Unsupported m3plus_mode: {m3plus_mode}')
         self.m3plus_mode = m3plus_mode
@@ -99,7 +100,8 @@ class M3ReID(nn.Module):
             'projection_calibrated_fusion', 'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
-            'direction_aware_quad_calibrated_fusion'
+            'direction_aware_quad_calibrated_fusion',
+            'detached_direction_aware_quad_calibrated_fusion'
         )
         self.use_local_residual = use_enhancements and m3plus_mode == 'local_residual'
         self.use_dual_fusion = use_enhancements and m3plus_mode in (
@@ -116,7 +118,8 @@ class M3ReID(nn.Module):
             'projection_calibrated_fusion', 'quad_calibrated_fusion',
             'adaptive_projection_calibrated_fusion',
             'adaptive_quad_calibrated_fusion',
-            'direction_aware_quad_calibrated_fusion'
+            'direction_aware_quad_calibrated_fusion',
+            'detached_direction_aware_quad_calibrated_fusion'
         )
         self.use_gated_residual_fusion = use_enhancements and m3plus_mode == 'gated_residual_fusion'
         self.use_part_token_fusion = use_enhancements and m3plus_mode == 'part_token_fusion'
@@ -143,8 +146,15 @@ class M3ReID(nn.Module):
         self.use_adaptive_quad_calibrated_fusion = (
             use_enhancements and m3plus_mode == 'adaptive_quad_calibrated_fusion'
         )
+        self.use_detached_direction_aware_quad_calibrated_fusion = (
+            use_enhancements and m3plus_mode == 'detached_direction_aware_quad_calibrated_fusion'
+        )
         self.use_direction_aware_quad_calibrated_fusion = (
-            use_enhancements and m3plus_mode == 'direction_aware_quad_calibrated_fusion'
+            use_enhancements
+            and m3plus_mode in (
+                'direction_aware_quad_calibrated_fusion',
+                'detached_direction_aware_quad_calibrated_fusion',
+            )
         )
         self.use_temporal_refine = (
             use_enhancements and m3plus_mode in (
@@ -297,6 +307,7 @@ class M3ReID(nn.Module):
                         self.embedding_dim, part_dim,
                         init_scale=calibration_init_scale,
                         max_scale=calibration_max_scale,
+                        detach_router=self.use_detached_direction_aware_quad_calibrated_fusion,
                     )
                 else:
                     self.dual_calibration_fusion = GatedResidualFusion(

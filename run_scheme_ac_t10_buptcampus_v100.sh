@@ -38,6 +38,7 @@ CALIBRATION_MMA_WEIGHT="${CALIBRATION_MMA_WEIGHT:-0.0012}"
 CALIBRATION_GATE_WEIGHT="${CALIBRATION_GATE_WEIGHT:-0.0}"
 CALIBRATION_GATE_TARGET="${CALIBRATION_GATE_TARGET:-0.75}"
 ROUTER_WEIGHT="${ROUTER_WEIGHT:-0.025}"
+M3PLUS_MODE="${M3PLUS_MODE:-direction_aware_quad_calibrated_fusion}"
 ID_LABEL_SMOOTHING="${ID_LABEL_SMOOTHING:-0.0}"
 OPTIMIZER="${OPTIMIZER:-adam}"
 GRAD_CHECKPOINT_HEAD="${GRAD_CHECKPOINT_HEAD:-0}"
@@ -96,7 +97,7 @@ python train_m3reid.py \
   --eval_fp16 \
   --resume "${BASELINE_CKPT}" \
   --use_m3plus \
-  --m3plus_mode direction_aware_quad_calibrated_fusion \
+  --m3plus_mode "${M3PLUS_MODE}" \
   --m3plus_aug_strength none \
   --mvl_num_heads "${MVL_NUM_HEADS}" \
   --part_num "${PART_NUM}" \
