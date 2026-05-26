@@ -1027,3 +1027,55 @@ class AnchorPreservedSparseBranchMixture(nn.Module):
         residual_scale = torch.clamp(self.residual_scale, min=0.0, max=self.max_residual_scale)
         fused = anchor + residual_scale * residual_gate * residual
         return fused, branch_budget, part_alpha, projection_alpha, calibration_alpha, residual_gate
+
+
+class ReliabilityAnchorQuadFusion(nn.Module):
+    """
+    Conservative unified quad fusion for cross-dataset transfer.
+
+    The module first builds a reliability-weighted quad embedding from global,
+    part, projection, and calibration branches, then applies a small
+    anchor-orthogonal residual refinement. It starts from the fixed SchemeAA
+    behavior and only learns a bounded complementary correction.
+    """
+
+    def __init__(
+        self,
+        global_dim,
+        part_dim,
+        projection_dim,
+        calibration_dim=None,
+        init_part_alpha=0.08,
+        init_projection_alpha=0.015,
+        init_calibration_alpha=0.025,
+        init_residual_scale=0.006,
+        max_residual_scale=0.025,
+    ):
+        super().__init__()
+        self.reliability_gate = ReliabilityBalancedQuadGate(
+            global_dim,
+            part_dim,
+            projection_dim,
+            calibration_dim=calibration_dim,
+            init_part_alpha=init_part_alpha,
+            init_projection_alpha=init_projection_alpha,
+            init_calibration_alpha=init_calibration_alpha,
+        )
+        self.anchor_refiner = AgreementAwareQuadResidualRefinement(
+            global_dim,
+            part_dim,
+            projection_dim,
+            calibration_dim=calibration_dim,
+            init_scale=init_residual_scale,
+            max_scale=max_residual_scale,
+        )
+
+    def forward(self, global_embed, part_embed, projection_embed, calibration_embed):
+        anchor, part_alpha, projection_alpha, calibration_alpha = self.reliability_gate(
+            global_embed, part_embed, projection_embed, calibration_embed
+        )
+        refined, residual_gate = self.anchor_refiner(
+            global_embed, part_embed, projection_embed, calibration_embed, anchor
+        )
+        branch_budget = part_alpha + projection_alpha + calibration_alpha
+        return refined, branch_budget, part_alpha, projection_alpha, calibration_alpha, residual_gate

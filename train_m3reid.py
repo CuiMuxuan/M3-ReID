@@ -229,6 +229,7 @@ if __name__ == '__main__':
                                  'adaptive_quad_calibrated_fusion',
                                  'reliability_quad_calibrated_fusion',
                                  'agreement_quad_residual_fusion',
+                                 'reliability_anchor_quad_fusion',
                                  'anchor_sparse_quad_fusion',
                                  'direction_aware_quad_calibrated_fusion',
                                  'detached_direction_aware_quad_calibrated_fusion'],
@@ -549,6 +550,7 @@ if __name__ == '__main__':
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
             'agreement_quad_residual_fusion',
+            'reliability_anchor_quad_fusion',
             'anchor_sparse_quad_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion',
@@ -611,6 +613,7 @@ if __name__ == '__main__':
         'adaptive_quad_calibrated_fusion',
         'reliability_quad_calibrated_fusion',
         'agreement_quad_residual_fusion',
+        'reliability_anchor_quad_fusion',
         'anchor_sparse_quad_fusion',
         'direction_aware_quad_calibrated_fusion',
         'detached_direction_aware_quad_calibrated_fusion'
@@ -985,6 +988,7 @@ if __name__ == '__main__':
                 'adaptive_quad_calibrated_fusion',
                 'reliability_quad_calibrated_fusion',
                 'agreement_quad_residual_fusion',
+                'reliability_anchor_quad_fusion',
                 'anchor_sparse_quad_fusion',
                 'direction_aware_quad_calibrated_fusion',
                 'detached_direction_aware_quad_calibrated_fusion'
@@ -1002,6 +1006,7 @@ if __name__ == '__main__':
                 'adaptive_quad_calibrated_fusion',
                 'reliability_quad_calibrated_fusion',
                 'agreement_quad_residual_fusion',
+                'reliability_anchor_quad_fusion',
                 'anchor_sparse_quad_fusion',
                 'direction_aware_quad_calibrated_fusion',
                 'detached_direction_aware_quad_calibrated_fusion'
@@ -1014,6 +1019,7 @@ if __name__ == '__main__':
                 'adaptive_projection_calibrated_fusion',
                 'adaptive_quad_calibrated_fusion',
                 'reliability_quad_calibrated_fusion',
+                'reliability_anchor_quad_fusion',
                 'anchor_sparse_quad_fusion'
             ):
                 loss = loss + args.branch_gate_weight * loss_branch_gate

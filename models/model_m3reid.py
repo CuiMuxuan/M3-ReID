@@ -37,6 +37,7 @@ from models.modules.enhancement import AdaptiveProjectionCalibrationGate
 from models.modules.enhancement import ReliabilityBalancedQuadGate
 from models.modules.enhancement import AgreementAwareQuadResidualRefinement
 from models.modules.enhancement import AnchorPreservedSparseBranchMixture
+from models.modules.enhancement import ReliabilityAnchorQuadFusion
 from models.modules.enhancement import TemporalEmbeddingRefinement
 
 
@@ -90,6 +91,7 @@ class M3ReID(nn.Module):
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
             'agreement_quad_residual_fusion',
+            'reliability_anchor_quad_fusion',
             'anchor_sparse_quad_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion'
@@ -110,6 +112,7 @@ class M3ReID(nn.Module):
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
             'agreement_quad_residual_fusion',
+            'reliability_anchor_quad_fusion',
             'anchor_sparse_quad_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion'
@@ -132,6 +135,7 @@ class M3ReID(nn.Module):
             'adaptive_quad_calibrated_fusion',
             'reliability_quad_calibrated_fusion',
             'agreement_quad_residual_fusion',
+            'reliability_anchor_quad_fusion',
             'anchor_sparse_quad_fusion',
             'direction_aware_quad_calibrated_fusion',
             'detached_direction_aware_quad_calibrated_fusion'
@@ -171,6 +175,9 @@ class M3ReID(nn.Module):
         )
         self.use_agreement_quad_residual_fusion = (
             use_enhancements and m3plus_mode == 'agreement_quad_residual_fusion'
+        )
+        self.use_reliability_anchor_quad_fusion = (
+            use_enhancements and m3plus_mode == 'reliability_anchor_quad_fusion'
         )
         self.use_anchor_sparse_quad_fusion = (
             use_enhancements and m3plus_mode == 'anchor_sparse_quad_fusion'
@@ -307,6 +314,7 @@ class M3ReID(nn.Module):
                 or self.use_adaptive_quad_calibrated_fusion
                 or self.use_reliability_quad_calibrated_fusion
                 or self.use_agreement_quad_residual_fusion
+                or self.use_reliability_anchor_quad_fusion
                 or self.use_anchor_sparse_quad_fusion
                 or self.use_direction_aware_quad_calibrated_fusion
             ):
@@ -332,6 +340,7 @@ class M3ReID(nn.Module):
                     self.use_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
                     or self.use_agreement_quad_residual_fusion
+                    or self.use_reliability_anchor_quad_fusion
                     or self.use_anchor_sparse_quad_fusion
                     or self.use_direction_aware_quad_calibrated_fusion
                 )
@@ -348,6 +357,13 @@ class M3ReID(nn.Module):
                     self.agreement_quad_refiner = AgreementAwareQuadResidualRefinement(
                         self.embedding_dim, part_dim, self.projection_dim,
                         init_scale=0.01, max_scale=0.04,
+                    )
+                if self.use_reliability_anchor_quad_fusion:
+                    self.reliability_anchor_quad_fusion = ReliabilityAnchorQuadFusion(
+                        self.embedding_dim, part_dim, self.projection_dim,
+                        init_part_alpha=self.fusion_alpha,
+                        init_projection_alpha=self.projection_alpha,
+                        init_calibration_alpha=self.calibration_alpha,
                     )
                 if self.use_anchor_sparse_quad_fusion:
                     self.anchor_sparse_quad_mixture = AnchorPreservedSparseBranchMixture(
@@ -374,6 +390,7 @@ class M3ReID(nn.Module):
                     or self.use_adaptive_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
                     or self.use_agreement_quad_residual_fusion
+                    or self.use_reliability_anchor_quad_fusion
                     or self.use_anchor_sparse_quad_fusion
                     or self.use_supervised_quad_calibrated_fusion
                 ):
@@ -382,6 +399,7 @@ class M3ReID(nn.Module):
                         self.use_adaptive_quad_calibrated_fusion
                         or self.use_reliability_quad_calibrated_fusion
                         or self.use_agreement_quad_residual_fusion
+                        or self.use_reliability_anchor_quad_fusion
                         or self.use_anchor_sparse_quad_fusion
                         or self.use_supervised_quad_calibrated_fusion
                     ):
@@ -446,6 +464,8 @@ class M3ReID(nn.Module):
         elif self.use_reliability_quad_calibrated_fusion:
             self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
         elif self.use_agreement_quad_residual_fusion:
+            self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
+        elif self.use_reliability_anchor_quad_fusion:
             self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
         elif self.use_anchor_sparse_quad_fusion:
             self.output_dim = self.embedding_dim + part_dim + self.projection_dim + self.embedding_dim
@@ -698,6 +718,7 @@ class M3ReID(nn.Module):
                 or self.use_adaptive_quad_calibrated_fusion
                 or self.use_reliability_quad_calibrated_fusion
                 or self.use_agreement_quad_residual_fusion
+                or self.use_reliability_anchor_quad_fusion
                 or self.use_anchor_sparse_quad_fusion
                 or self.use_direction_aware_quad_calibrated_fusion
             ):
@@ -772,6 +793,7 @@ class M3ReID(nn.Module):
                     or self.use_adaptive_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
                     or self.use_agreement_quad_residual_fusion
+                    or self.use_reliability_anchor_quad_fusion
                     or self.use_anchor_sparse_quad_fusion
                     or self.use_direction_aware_quad_calibrated_fusion
                 ):
@@ -795,6 +817,7 @@ class M3ReID(nn.Module):
                     or self.use_adaptive_quad_calibrated_fusion
                     or self.use_reliability_quad_calibrated_fusion
                     or self.use_agreement_quad_residual_fusion
+                    or self.use_reliability_anchor_quad_fusion
                     or self.use_anchor_sparse_quad_fusion
                     or self.use_direction_aware_quad_calibrated_fusion
                 ):
@@ -855,6 +878,27 @@ class M3ReID(nn.Module):
                             self.feature_dropout(agreement_bn)
                         )
                         aux['agreement_gate'] = agreement_gate
+                    if self.use_reliability_anchor_quad_fusion:
+                        (
+                            reliability_anchor_eval,
+                            branch_budget,
+                            part_alpha,
+                            projection_alpha,
+                            calibration_alpha,
+                            residual_gate,
+                        ) = self.reliability_anchor_quad_fusion(
+                            x_embed_mean, part_embed_mean, aux['projection_embed_mean'], calibration_embed_mean
+                        )
+                        aux['fusion_embed_mean'] = reliability_anchor_eval
+                        reliability_anchor_bn = self.adaptive_projection_bn_neck(reliability_anchor_eval)
+                        aux['fusion_logits_mean'] = self.adaptive_projection_classifier(
+                            self.feature_dropout(reliability_anchor_bn)
+                        )
+                        aux['branch_budget'] = branch_budget
+                        aux['part_alpha'] = part_alpha
+                        aux['projection_alpha'] = projection_alpha
+                        aux['calibration_alpha'] = calibration_alpha
+                        aux['residual_gate'] = residual_gate
                     if self.use_anchor_sparse_quad_fusion:
                         (
                             anchor_sparse_eval,
@@ -941,6 +985,10 @@ class M3ReID(nn.Module):
                     )
                     return self.agreement_quad_refiner(
                         x_embed_mean, part_aux[1], projection_embed, calibration_embed, base_quad_eval
+                    )[0]
+                if self.use_reliability_anchor_quad_fusion:
+                    return self.reliability_anchor_quad_fusion(
+                        x_embed_mean, part_aux[1], projection_embed, calibration_embed
                     )[0]
                 if self.use_anchor_sparse_quad_fusion:
                     return self.anchor_sparse_quad_mixture(
