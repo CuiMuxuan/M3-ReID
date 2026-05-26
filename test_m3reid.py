@@ -305,6 +305,7 @@ if __name__ == '__main__':
                                  'adaptive_quad_calibrated_fusion',
                                  'reliability_quad_calibrated_fusion',
                                  'agreement_quad_residual_fusion',
+                                 'anchor_sparse_quad_fusion',
                                  'direction_aware_quad_calibrated_fusion',
                                  'detached_direction_aware_quad_calibrated_fusion'],
                         help='M3Plus architecture mode used by the checkpoint')

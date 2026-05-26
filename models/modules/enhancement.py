@@ -863,3 +863,167 @@ class AgreementAwareQuadResidualRefinement(nn.Module):
         scale = torch.clamp(self.scale, min=0.0, max=self.max_scale)
         refined = base_embed + scale * gate * residual
         return refined, gate
+
+
+class AnchorPreservedSparseBranchMixture(nn.Module):
+    """
+    Content-adaptive quad embedding with an explicit anchor-preservation path.
+
+    The module keeps the fixed quad embedding as the anchor, predicts a small
+    sample-level side-branch budget, sparsely allocates that budget across
+    part/projection/calibration branches, then applies a zero-initialized
+    residual that is constrained to the orthogonal direction of the anchor.
+    """
+
+    def __init__(
+        self,
+        global_dim,
+        part_dim,
+        projection_dim,
+        calibration_dim=None,
+        hidden_dim=64,
+        init_part_alpha=0.08,
+        init_projection_alpha=0.015,
+        init_calibration_alpha=0.025,
+        max_branch_budget=None,
+        init_residual_scale=0.005,
+        max_residual_scale=0.03,
+    ):
+        super().__init__()
+        if hidden_dim <= 0:
+            raise ValueError('hidden_dim must be positive.')
+        if projection_dim <= 0:
+            raise ValueError('projection_dim must be positive.')
+        if not 0.0 < max_residual_scale <= 1.0:
+            raise ValueError('max_residual_scale must be in (0, 1].')
+
+        calibration_dim = global_dim if calibration_dim is None else calibration_dim
+        self.quad_dim = global_dim + part_dim + projection_dim + calibration_dim
+        self.max_residual_scale = float(max_residual_scale)
+
+        init_alphas = torch.tensor([
+            float(init_part_alpha),
+            float(init_projection_alpha),
+            float(init_calibration_alpha),
+        ]).clamp_min(0.0)
+        init_budget = float(init_alphas.sum().item())
+        if max_branch_budget is None:
+            max_branch_budget = max(init_budget * 1.5, 0.16)
+        max_branch_budget = float(max_branch_budget)
+        if not 0.0 < max_branch_budget < 1.0:
+            raise ValueError('max_branch_budget must be in (0, 1).')
+        self.register_buffer('max_branch_budget', torch.tensor(max_branch_budget))
+
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.part_norm = nn.LayerNorm(part_dim)
+        self.projection_norm = nn.LayerNorm(projection_dim)
+        self.calibration_norm = nn.LayerNorm(calibration_dim)
+        self.anchor_norm = nn.LayerNorm(self.quad_dim)
+        self.global_reduce = nn.Linear(global_dim, hidden_dim, bias=False)
+        self.part_reduce = nn.Linear(part_dim, hidden_dim, bias=False)
+        self.projection_reduce = nn.Linear(projection_dim, hidden_dim, bias=False)
+        self.calibration_reduce = nn.Linear(calibration_dim, hidden_dim, bias=False)
+        self.anchor_reduce = nn.Linear(self.quad_dim, hidden_dim, bias=False)
+
+        summary_dim = hidden_dim * 5 + 6
+        self.summary_encoder = nn.Sequential(
+            nn.Linear(summary_dim, hidden_dim, bias=False),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
+            nn.GELU(),
+        )
+        self.budget_head = nn.Linear(hidden_dim, 1, bias=True)
+        self.branch_head = nn.Linear(hidden_dim, 3, bias=True)
+
+        gate_hidden_dim = max(hidden_dim // 2, 1)
+        self.residual_gate = nn.Sequential(
+            nn.Linear(hidden_dim, gate_hidden_dim, bias=False),
+            nn.GELU(),
+            nn.Linear(gate_hidden_dim, 1, bias=True),
+            nn.Sigmoid(),
+        )
+        self.residual = nn.Linear(hidden_dim, self.quad_dim, bias=False)
+        self.residual_scale = nn.Parameter(torch.tensor(float(init_residual_scale)))
+
+        init_budget_ratio = min(max(init_budget / max_branch_budget, 1e-4), 1.0 - 1e-4)
+        if init_budget <= 0:
+            init_distribution = torch.tensor([1.0, 1e-4, 1e-4])
+        else:
+            init_distribution = (init_alphas / max(init_budget, 1e-12)).clamp_min(1e-4)
+        init_distribution = init_distribution / init_distribution.sum()
+
+        nn.init.zeros_(self.budget_head.weight)
+        nn.init.zeros_(self.branch_head.weight)
+        nn.init.zeros_(self.residual.weight)
+        nn.init.zeros_(self.residual_gate[-2].weight)
+        nn.init.zeros_(self.residual_gate[-2].bias)
+        with torch.no_grad():
+            self.budget_head.bias.fill_(math.log(init_budget_ratio / (1.0 - init_budget_ratio)))
+            self.branch_head.bias.copy_(torch.log(init_distribution))
+
+    def _summary(self, reducer, norm, x):
+        return F.normalize(reducer(norm(x.detach())), dim=1)
+
+    def _build_anchor(self, global_embed, part_embed, projection_embed, calibration_embed, alphas):
+        part_alpha, projection_alpha, calibration_alpha = alphas
+        global_alpha = (1.0 - part_alpha - projection_alpha - calibration_alpha).clamp_min(1e-6)
+        global_eval = F.normalize(global_embed, dim=1) * torch.sqrt(global_alpha)
+        part_eval = F.normalize(part_embed, dim=1) * torch.sqrt(part_alpha.clamp_min(1e-6))
+        projection_eval = F.normalize(projection_embed, dim=1) * torch.sqrt(projection_alpha.clamp_min(1e-6))
+        calibration_eval = F.normalize(calibration_embed, dim=1) * torch.sqrt(calibration_alpha.clamp_min(1e-6))
+        return torch.cat([global_eval, part_eval, projection_eval, calibration_eval], dim=1)
+
+    def forward(self, global_embed, part_embed, projection_embed, calibration_embed):
+        seed_budget = torch.sigmoid(self.budget_head.bias.detach()) * self.max_branch_budget
+        seed_logits = self.branch_head.bias.detach().softmax(dim=0)
+        seed_shape = (global_embed.size(0), 1)
+        seed_alphas = (
+            global_embed.new_ones(seed_shape) * seed_budget * seed_logits[0],
+            global_embed.new_ones(seed_shape) * seed_budget * seed_logits[1],
+            global_embed.new_ones(seed_shape) * seed_budget * seed_logits[2],
+        )
+        seed_anchor = self._build_anchor(
+            global_embed, part_embed, projection_embed, calibration_embed, seed_alphas
+        )
+
+        global_summary = self._summary(self.global_reduce, self.global_norm, global_embed)
+        part_summary = self._summary(self.part_reduce, self.part_norm, part_embed)
+        projection_summary = self._summary(self.projection_reduce, self.projection_norm, projection_embed)
+        calibration_summary = self._summary(self.calibration_reduce, self.calibration_norm, calibration_embed)
+        anchor_summary = self._summary(self.anchor_reduce, self.anchor_norm, seed_anchor)
+
+        agreements = torch.cat([
+            (global_summary * part_summary).sum(dim=1, keepdim=True),
+            (global_summary * projection_summary).sum(dim=1, keepdim=True),
+            (global_summary * calibration_summary).sum(dim=1, keepdim=True),
+            (part_summary * projection_summary).sum(dim=1, keepdim=True),
+            (part_summary * calibration_summary).sum(dim=1, keepdim=True),
+            (projection_summary * calibration_summary).sum(dim=1, keepdim=True),
+        ], dim=1)
+        summary = torch.cat([
+            global_summary,
+            part_summary,
+            projection_summary,
+            calibration_summary,
+            anchor_summary,
+            agreements,
+        ], dim=1)
+        hidden = self.summary_encoder(summary)
+
+        branch_budget = torch.sigmoid(self.budget_head(hidden)) * self.max_branch_budget
+        branch_distribution = F.softmax(self.branch_head(hidden), dim=1)
+        part_alpha = branch_budget * branch_distribution[:, 0:1]
+        projection_alpha = branch_budget * branch_distribution[:, 1:2]
+        calibration_alpha = branch_budget * branch_distribution[:, 2:3]
+        anchor = self._build_anchor(
+            global_embed, part_embed, projection_embed, calibration_embed,
+            (part_alpha, projection_alpha, calibration_alpha)
+        )
+
+        residual = self.residual(hidden)
+        anchor_direction = F.normalize(anchor.detach(), dim=1)
+        residual = residual - (residual * anchor_direction).sum(dim=1, keepdim=True) * anchor_direction
+        residual_gate = self.residual_gate(hidden)
+        residual_scale = torch.clamp(self.residual_scale, min=0.0, max=self.max_residual_scale)
+        fused = anchor + residual_scale * residual_gate * residual
+        return fused, branch_budget, part_alpha, projection_alpha, calibration_alpha, residual_gate
